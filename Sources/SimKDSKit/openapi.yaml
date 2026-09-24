@@ -1,0 +1,592 @@
+openapi: 3.0.3
+info:
+  title: SimKDS Generic KDS API
+  version: 1.0.0
+  description: |
+    Generic KDS API v1 for connecting SimKDS Android tablets to an external
+    backend. The backend owns order, payment, fiscal, routing, and visibility
+    decisions. SimKDS only reads kitchen-visible tickets and sends kitchen
+    actions back to the backend.
+servers:
+  - url: https://kds.example.com
+    description: Production backend example
+  - url: http://127.0.0.1:8088
+    description: Local mock/debug server only
+tags:
+  - name: Stations
+  - name: Tickets
+  - name: Actions
+security:
+  - bearerAuth: []
+  - simKdsApiKey: []
+paths:
+  /api/v1/kds/stations:
+    get:
+      tags:
+        - Stations
+      summary: List KDS stations available for a location.
+      operationId: listKdsStations
+      parameters:
+        - $ref: "#/components/parameters/LocationIdQuery"
+        - $ref: "#/components/parameters/LocationIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+      responses:
+        "200":
+          description: Station directory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationsResponse"
+              examples:
+                default:
+                  value:
+                    locationId: flos-main
+                    stations:
+                      - stationId: station_bar_hot
+                        route: bar_hot
+                        label: BAR-HOT
+                        displayName: Горячий бар
+                        sortOrder: 10
+                        activeTicketsPath: /api/v1/kds/stations/station_bar_hot/tickets/active
+                        isActive: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/BackendError"
+  /api/v1/kds/stations/{stationId}/tickets/active:
+    get:
+      tags:
+        - Tickets
+      summary: List active tickets for one station.
+      operationId: listActiveTickets
+      parameters:
+        - $ref: "#/components/parameters/StationIdPath"
+        - $ref: "#/components/parameters/LocationIdHeader"
+        - $ref: "#/components/parameters/StationIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+      responses:
+        "200":
+          description: Backend-approved active tickets for this station.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActiveTicketsResponse"
+              examples:
+                default:
+                  value:
+                    tickets:
+                      - ticketId: ticket_1001
+                        displayNumber: APP-8F41
+                        stationId: station_bar_hot
+                        source: app
+                        sourceLabel: Приложение
+                        kitchenState: new
+                        visibleAt: "2026-07-09T10:00:00Z"
+                        version: 3
+                        slaDueAt: "2026-07-09T10:07:00Z"
+                        customerName: Анна
+                        metadata:
+                          paymentState: paid
+                          fiscalState: accepted
+                        items:
+                          - lineId: line_1
+                            name: Капучино
+                            quantity: 1
+                            modifiers:
+                              - Овсяное молоко
+                              - Декаф
+                            comment: Без крышки
+                            recipeLines:
+                              - Эспрессо 18 г
+                              - Молоко 220 мл
+                            availabilityState: available
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/BackendError"
+  /api/v1/kds/tickets/{ticketId}/actions:
+    post:
+      tags:
+        - Actions
+      summary: Apply a KDS action to one ticket.
+      operationId: applyTicketAction
+      parameters:
+        - $ref: "#/components/parameters/TicketIdPath"
+        - $ref: "#/components/parameters/LocationIdHeader"
+        - $ref: "#/components/parameters/StationIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+        - $ref: "#/components/parameters/RequestIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TicketActionRequest"
+            examples:
+              start:
+                value:
+                  stationId: station_bar_hot
+                  deviceId: tablet_bar_01
+                  actorId: barista_01
+                  action: start
+                  expectedVersion: 3
+                  occurredAt: "2026-07-09T10:01:30Z"
+      responses:
+        "200":
+          description: Action accepted. The response may include an updated ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TicketActionResponse"
+              examples:
+                ok:
+                  value:
+                    ok: true
+                withTicket:
+                  value:
+                    ok: true
+                    ticket:
+                      ticketId: ticket_1001
+                      displayNumber: APP-8F41
+                      stationId: station_bar_hot
+                      source: app
+                      sourceLabel: Приложение
+                      kitchenState: in_progress
+                      visibleAt: "2026-07-09T10:00:00Z"
+                      version: 4
+                      items: []
+        "202":
+          description: Action accepted asynchronously.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TicketActionResponse"
+        "204":
+          description: Action accepted with an empty response body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Action conflict. SimKDS refreshes only for stale version or station mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                staleVersion:
+                  value:
+                    error:
+                      code: stale_version
+                      message: Ticket version changed. Refresh active tickets.
+                stationMismatch:
+                  value:
+                    error:
+                      code: station_mismatch
+                      message: Ticket belongs to another station. Refresh active tickets.
+                idempotencyConflict:
+                  value:
+                    error:
+                      code: idempotency_conflict
+                      message: Idempotency key was already used with another payload.
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/BackendError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+      description: Recommended auth for new integrations.
+    simKdsApiKey:
+      type: apiKey
+      in: header
+      name: X-SimKDS-Api-Key
+      description: Compatibility auth alternative for backends that cannot use Bearer tokens.
+  parameters:
+    LocationIdQuery:
+      name: locationId
+      in: query
+      required: true
+      schema:
+        type: string
+        minLength: 1
+      example: flos-main
+    StationIdPath:
+      name: stationId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+      example: station_bar_hot
+    TicketIdPath:
+      name: ticketId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+      example: ticket_1001
+    LocationIdHeader:
+      name: X-SimKDS-Location-Id
+      in: header
+      required: false
+      schema:
+        type: string
+      example: flos-main
+    StationIdHeader:
+      name: X-SimKDS-Station-Id
+      in: header
+      required: false
+      schema:
+        type: string
+      example: station_bar_hot
+    DeviceIdHeader:
+      name: X-SimKDS-Device-Id
+      in: header
+      required: false
+      schema:
+        type: string
+      example: tablet_bar_01
+    DeviceNameHeader:
+      name: X-SimKDS-Device-Name
+      in: header
+      required: false
+      schema:
+        type: string
+      example: Bar Tablet
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+      example: kds_action_tablet_bar_01_ticket_1001_start_3_20260709T100000Z
+    RequestIdHeader:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+      example: req_kds_action_tablet_bar_01_ticket_1001_start_3_20260709T100000Z
+  responses:
+    Unauthorized:
+      description: Missing or invalid auth token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            default:
+              value:
+                error:
+                  code: unauthorized
+                  message: Invalid KDS API key.
+    Forbidden:
+      description: Token is valid but not allowed for the requested location, station, device, or action.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            default:
+              value:
+                error:
+                  code: forbidden
+                  message: Token is not allowed for this station.
+    NotFound:
+      description: Requested station or ticket does not exist or is not visible to this client.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            default:
+              value:
+                error:
+                  code: not_found
+                  message: Resource was not found.
+    ValidationError:
+      description: Request payload or query is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            default:
+              value:
+                error:
+                  code: validation_error
+                  message: Request validation failed.
+                  details:
+                    - field: stationId
+                      message: stationId is required.
+    BackendError:
+      description: Backend is unavailable or failed while processing the request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            default:
+              value:
+                error:
+                  code: backend_error
+                  message: KDS backend is temporarily unavailable.
+  schemas:
+    StationsResponse:
+      type: object
+      required:
+        - stations
+      properties:
+        locationId:
+          type: string
+        stations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Station"
+    Station:
+      type: object
+      required:
+        - stationId
+        - route
+        - label
+        - displayName
+        - sortOrder
+        - activeTicketsPath
+        - isActive
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+        route:
+          type: string
+          minLength: 1
+        label:
+          type: string
+          minLength: 1
+        displayName:
+          type: string
+          minLength: 1
+        sortOrder:
+          type: integer
+        activeTicketsPath:
+          type: string
+          minLength: 1
+        isActive:
+          type: boolean
+    ActiveTicketsResponse:
+      type: object
+      required:
+        - tickets
+      properties:
+        tickets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Ticket"
+    Ticket:
+      type: object
+      required:
+        - ticketId
+        - displayNumber
+        - stationId
+        - source
+        - kitchenState
+        - visibleAt
+        - items
+      properties:
+        ticketId:
+          type: string
+          minLength: 1
+        displayNumber:
+          type: string
+          minLength: 1
+        stationId:
+          type: string
+          minLength: 1
+        source:
+          $ref: "#/components/schemas/TicketSource"
+        sourceLabel:
+          type: string
+        kitchenState:
+          $ref: "#/components/schemas/KitchenState"
+        visibleAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          minimum: 0
+        slaDueAt:
+          type: string
+          format: date-time
+          nullable: true
+        customerName:
+          type: string
+          nullable: true
+          description: Safe display name only. Do not send email, phone, Telegram handle/id, payment/provider/fiscal ids, or tokens.
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TicketLine"
+    TicketLine:
+      type: object
+      required:
+        - lineId
+        - name
+        - quantity
+      properties:
+        lineId:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        quantity:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        modifiers:
+          type: array
+          items:
+            type: string
+        comment:
+          type: string
+          nullable: true
+        recipeLines:
+          type: array
+          items:
+            type: string
+        availabilityState:
+          $ref: "#/components/schemas/AvailabilityState"
+    TicketActionRequest:
+      type: object
+      required:
+        - stationId
+        - deviceId
+        - actorId
+        - action
+        - occurredAt
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+        deviceId:
+          type: string
+          minLength: 1
+        actorId:
+          type: string
+          minLength: 1
+        action:
+          $ref: "#/components/schemas/TicketAction"
+        expectedVersion:
+          type: integer
+          minimum: 0
+          nullable: true
+        occurredAt:
+          type: string
+          format: date-time
+    TicketActionResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        accepted:
+          type: boolean
+        ticketId:
+          type: string
+        acceptedAction:
+          $ref: "#/components/schemas/TicketAction"
+        ticket:
+          $ref: "#/components/schemas/Ticket"
+      additionalProperties: true
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorBody"
+    ErrorBody:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          minLength: 1
+        requestId:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    TicketSource:
+      type: string
+      enum:
+        - pos
+        - app
+        - delivery
+        - web
+        - other
+    KitchenState:
+      type: string
+      enum:
+        - new
+        - in_progress
+        - ready
+        - completed
+        - cancelled
+        - blocked
+    AvailabilityState:
+      type: string
+      enum:
+        - available
+        - unavailable
+        - blocked
+        - stoplisted
+        - sold_out
+        - cancelled
+    TicketAction:
+      type: string
+      enum:
+        - start
+        - mark_ready
+        - complete
+    ErrorCode:
+      type: string
+      enum:
+        - unauthorized
+        - forbidden
+        - not_found
+        - stale_version
+        - station_mismatch
+        - idempotency_conflict
+        - validation_error
+        - backend_error

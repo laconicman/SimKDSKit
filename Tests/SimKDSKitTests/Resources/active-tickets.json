@@ -1,0 +1,51 @@
+{
+  "tickets": [
+    {
+      "ticketId": "ticket_1001",
+      "displayNumber": "APP-8F41",
+      "stationId": "station_bar_hot",
+      "source": "app",
+      "sourceLabel": "Приложение",
+      "kitchenState": "new",
+      "visibleAt": "2026-07-09T10:00:00Z",
+      "version": 3,
+      "slaDueAt": "2026-07-09T10:07:00Z",
+      "customerName": "Анна",
+      "metadata": {
+        "paymentState": "paid",
+        "fiscalState": "accepted"
+      },
+      "items": [
+        {
+          "lineId": "line_1",
+          "name": "Капучино",
+          "quantity": 1,
+          "modifiers": ["oaten milk"],
+          "comment": "no sugar",
+          "recipeLines": ["heat milk to 65°C", "pull double shot"]
+        },
+        {
+          "lineId": "line_2",
+          "name": "Сэндвич",
+          "quantity": 2,
+          "availabilityState": "available"
+        }
+      ]
+    },
+    {
+      "ticketId": "ticket_1002",
+      "displayNumber": "POS-114",
+      "stationId": "station_bar_hot",
+      "source": "pos",
+      "kitchenState": "in_progress",
+      "visibleAt": "2026-07-09T10:01:30Z",
+      "items": [
+        {
+          "lineId": "line_3",
+          "name": "Латте",
+          "quantity": 1
+        }
+      ]
+    }
+  ]
+}
