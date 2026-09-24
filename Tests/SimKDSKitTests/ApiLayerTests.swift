@@ -653,6 +653,36 @@ struct MockKdsAPITests {
         #expect(barHot?.station.matchesStationId("station_bar_hot") == true)
     }
 
+    @Test("An accepted action advances the mock's ticket; a later scripted refresh keeps it")
+    func actionPersistsAcrossPolls() async throws {
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
+        let mock = MockKdsAPI(
+            tickets: MockKdsAPI.seedTickets(now: clock.now),
+            clock: { clock.now }
+        )
+
+        try await mock.applyTicketAction(.start(
+            ticketId: "ticket-a43", displayNumber: "A-43",
+            expectedVersion: nil, occurredAt: clock.now
+        ), context: context)
+
+        // Same contract as a live backend: the next fetch reports the new status.
+        let fetched = try await mock.fetchActiveTickets(context: context)
+        #expect(fetched.first { $0.id == "ticket-a43" }?.status == .inProgress)
+
+        // A scripted arrival gets acted on, then the next poll restates it —
+        // the accepted transition must survive the restatement.
+        let first = try await mock.refresh(context: context)
+        #expect(first.first { $0.id == "ticket-m13" }?.status == .new)
+        try await mock.applyTicketAction(.start(
+            ticketId: "ticket-m13", displayNumber: "M-13",
+            expectedVersion: nil, occurredAt: clock.now
+        ), context: context)
+        let second = try await mock.refresh(context: context)
+        #expect(second.first { $0.id == "ticket-m13" }?.status == .inProgress)
+        #expect(second.first { $0.id == "ticket-a43" }?.status == .inProgress)
+    }
+
     @Test("failNextAction fires once then clears")
     func failNext() async throws {
         let mock = MockKdsAPI(now: Date())

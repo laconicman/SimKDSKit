@@ -67,22 +67,25 @@ public actor MockKdsAPI: KdsAPI {
 
     /// The poll path: every refresh upserts the scripted trio, same as the
     /// Kotlin `refresh` — the demo board visibly changes on each poll. An
-    /// existing ticket keeps its `visibleAt`: it is the wait-time baseline,
-    /// and a poll that restated it would zero the timer forever.
+    /// existing ticket keeps its `visibleAt` (the wait-time baseline), and the
+    /// upsert goes through the snapshot merge so a scripted restatement can
+    /// never roll back a status an accepted action advanced.
     public func refresh(context: KdsContext) async throws(KdsAPIError) -> [KdsTicket] {
         refreshCount += 1
         lastRefreshContext = context
         let now = clock()
-        for ticket in [Self.fakePosOrder(now: now), Self.fakeOnlineOrder(now: now), Self.fakeFiscalReadyOrder(now: now)] {
-            var scripted = ticket
-            if let existing = tickets.first(where: { $0.id == ticket.id }) {
+        for var scripted in [Self.fakePosOrder(now: now), Self.fakeOnlineOrder(now: now), Self.fakeFiscalReadyOrder(now: now)] {
+            if let existing = tickets.first(where: { $0.id == scripted.id }) {
                 scripted.visibleAt = existing.visibleAt
             }
-            upsert(scripted)
+            tickets = KdsReducer.mergeRemoteTicket(tickets, remoteTicket: scripted, at: now)
         }
         return tickets.filter { $0.station.matchesStationId(context.stationId) }
     }
 
+    /// An accepted action mutates the mock's feed, same as a live backend —
+    /// the next fetch reports the new status. The transition is the domain's
+    /// own `reduce`, so optimistic and confirmed semantics can never drift.
     public func applyTicketAction(_ action: KdsAction, context: KdsContext) async throws(KdsAPIError) {
         sentActions.append(action)
         if let message = nextFailureMessage {
@@ -90,6 +93,7 @@ public actor MockKdsAPI: KdsAPI {
             throw KdsAPIError.backendError(message: message)
         }
         try onAction?(action)
+        tickets = KdsReducer.reduce(tickets, action)
     }
 
     public func failNextAction(_ message: String) {
