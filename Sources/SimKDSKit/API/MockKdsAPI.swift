@@ -57,12 +57,13 @@ public actor MockKdsAPI: KdsAPI {
         ]
     }
 
-    /// Same contract as the live endpoint — one station's feed, not the whole
-    /// mock's state (a single-station device must not see other posts' work).
+    /// Same contract as the live endpoint — one station's active feed, not
+    /// the whole mock's state (a single-station device must not see other
+    /// posts' work, and terminal tickets have left the active set).
     public func fetchActiveTickets(context: KdsContext) async throws(KdsAPIError) -> [KdsTicket] {
         fetchCount += 1
         lastFetchContext = context
-        return tickets.filter { $0.station.matchesStationId(context.stationId) }
+        return activeTickets(for: context)
     }
 
     /// The poll path: every refresh upserts the scripted trio, same as the
@@ -80,7 +81,7 @@ public actor MockKdsAPI: KdsAPI {
             }
             tickets = KdsReducer.mergeRemoteTicket(tickets, remoteTicket: scripted, at: now)
         }
-        return tickets.filter { $0.station.matchesStationId(context.stationId) }
+        return activeTickets(for: context)
     }
 
     /// An accepted action mutates the mock's feed, same as a live backend —
@@ -102,6 +103,14 @@ public actor MockKdsAPI: KdsAPI {
 
     public func emitTicket(_ ticket: KdsTicket) {
         upsert(ticket)
+    }
+
+    /// The station's active feed — terminal tickets stay in the mock's store
+    /// (history) but leave the feed, like the live `/tickets/active` endpoint.
+    private func activeTickets(for context: KdsContext) -> [KdsTicket] {
+        tickets.filter {
+            $0.station.matchesStationId(context.stationId) && !$0.status.isTerminal
+        }
     }
 
     private func upsert(_ ticket: KdsTicket) {
@@ -205,4 +214,10 @@ public actor MockKdsAPI: KdsAPI {
             items: [KdsTicketItem(name: "Латте", quantity: 1)]
         )
     }
+}
+
+private extension KdsTicketStatus {
+    /// Terminal statuses leave the active feed — the same cut the live
+    /// `/tickets/active` endpoint makes server-side.
+    var isTerminal: Bool { self == .completed || self == .cancelled }
 }

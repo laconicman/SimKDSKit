@@ -683,6 +683,31 @@ struct MockKdsAPITests {
         #expect(second.first { $0.id == "ticket-a43" }?.status == .inProgress)
     }
 
+    @Test("A completed ticket leaves the mock's active feed, like the live endpoint")
+    func completedLeavesActiveFeed() async throws {
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
+        let mock = MockKdsAPI(
+            tickets: MockKdsAPI.seedTickets(now: clock.now),
+            clock: { clock.now }
+        )
+
+        try await mock.applyTicketAction(.markReady(
+            ticketId: "ticket-a42", displayNumber: "A-42",
+            expectedVersion: nil, occurredAt: clock.now
+        ), context: context)
+        try await mock.applyTicketAction(.complete(
+            ticketId: "ticket-a42", displayNumber: "A-42",
+            expectedVersion: nil, occurredAt: clock.now
+        ), context: context)
+
+        let fetched = try await mock.fetchActiveTickets(context: context)
+        #expect(fetched.first { $0.id == "ticket-a42" } == nil)
+        let refreshed = try await mock.refresh(context: context)
+        #expect(refreshed.first { $0.id == "ticket-a42" } == nil)
+        // History is retained in the store — the ticket isn't gone, just inactive.
+        #expect(await mock.sentActions.count == 2)
+    }
+
     @Test("failNextAction fires once then clears")
     func failNext() async throws {
         let mock = MockKdsAPI(now: Date())
