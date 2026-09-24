@@ -117,3 +117,66 @@ struct FailingTransport: ClientTransport {
         throw Failure()
     }
 }
+
+// MARK: - Feed-engine backend double
+
+/// The engine tests' backend — the Kotlin suite's scripted `KdsHttpApiClient`
+/// doubles (`ManualRefresh`/`ConflictThen*`/`EmptyThen*`/`FailingFetch`) folded
+/// into one actor: a fixed active feed plus a result queue per endpoint. An
+/// exhausted queue falls back to the seed feed / success.
+actor ScriptedKdsAPI: KdsAPI {
+    private let fallbackTickets: [KdsTicket]
+    private var fetchQueue: [Result<[KdsTicket], KdsAPIError>]
+    private var refreshQueue: [Result<[KdsTicket], KdsAPIError>]
+    private var actionQueue: [Result<Void, KdsAPIError>]
+    private var stationsResult: Result<[KdsStationDirectoryEntry], KdsAPIError>
+    private var actionHook: (@Sendable () async -> Void)?
+
+    private(set) var sentActions: [KdsAction] = []
+    private(set) var fetchCount = 0
+    private(set) var refreshCount = 0
+    private(set) var stationFetchCount = 0
+
+    init(
+        tickets: [KdsTicket] = [],
+        fetchResults: [Result<[KdsTicket], KdsAPIError>] = [],
+        refreshResults: [Result<[KdsTicket], KdsAPIError>] = [],
+        actionResults: [Result<Void, KdsAPIError>] = [],
+        stationsResult: Result<[KdsStationDirectoryEntry], KdsAPIError> = .success(MockKdsAPI.defaultDirectory())
+    ) {
+        self.fallbackTickets = tickets
+        self.fetchQueue = fetchResults
+        self.refreshQueue = refreshResults
+        self.actionQueue = actionResults
+        self.stationsResult = stationsResult
+    }
+
+    /// Kotlin's `onAction` — runs inside the action call so a test can assert
+    /// the engine's optimistic state while the backend round-trip is in flight.
+    func setActionHook(_ hook: @escaping @Sendable () async -> Void) {
+        actionHook = hook
+    }
+
+    func fetchStations(context: KdsContext) async throws(KdsAPIError) -> [KdsStationDirectoryEntry] {
+        stationFetchCount += 1
+        return try stationsResult.get()
+    }
+
+    func fetchActiveTickets(context: KdsContext) async throws(KdsAPIError) -> [KdsTicket] {
+        fetchCount += 1
+        return fetchQueue.isEmpty ? fallbackTickets : try fetchQueue.removeFirst().get()
+    }
+
+    func refresh(context: KdsContext) async throws(KdsAPIError) -> [KdsTicket] {
+        refreshCount += 1
+        return refreshQueue.isEmpty ? fallbackTickets : try refreshQueue.removeFirst().get()
+    }
+
+    func applyTicketAction(_ action: KdsAction, context: KdsContext) async throws(KdsAPIError) {
+        sentActions.append(action)
+        await actionHook?()
+        if !actionQueue.isEmpty {
+            try actionQueue.removeFirst().get()
+        }
+    }
+}

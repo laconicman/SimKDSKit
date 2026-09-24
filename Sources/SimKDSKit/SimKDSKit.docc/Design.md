@@ -46,14 +46,26 @@ client-build time and deleted when provisioning flags a target change. The
 Android Keystore AES codec is not ported: Keychain is the encrypted store, so
 the codec was mechanism without a problem.
 
-## The feed engine is pure
+## The feed engine is an actor over a facade
 
 `KdsFeedEngine` holds the transition logic the Kotlin `FakeKdsRepository` mixed
 with coroutines: optimistic dispatch, failure rollback, refresh-on-conflict,
-snapshot merge, dedupe, persistence intent. It takes `now` as a parameter and
-returns new state — the app's controller owns the Tasks, the clock, and the
-stores. This is what makes the repository test-suite a package suite instead of
-an app suite, and it is what a future widget would reuse.
+snapshot merge, dedupe, persistence. It is an `actor` — the serialized
+`dispatchLock` port — talking only to `any KdsAPI` and building `KdsContext`
+snapshots from current settings per call; the app's controller owns the Tasks,
+the clock is injected, and views subscribe through `observe()` where Android
+collected a `StateFlow`. `start()` is the eager-init fetch made async —
+construction itself never touches the network.
+
+`updateSettings(_:api:)` takes the rebuilt facade when connection parameters
+move (the app rebuilds the client; the engine never mutates one). The Kotlin
+`emitRemoteTicket` push path is not ported — Generic KDS v1 has no push
+channel, and the mock already drives arrivals through `refresh`.
+
+Persistence is a seam: `KdsSettingsStore` with an in-memory store for
+tests/previews and a UserDefaults store for the app. The persisted slice is
+`KdsPersistedSettings` — device settings, board filters, last action error —
+which is why the domain settings types are `Codable`.
 
 ## What the port deletes
 
