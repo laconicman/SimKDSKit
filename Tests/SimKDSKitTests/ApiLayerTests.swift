@@ -315,6 +315,25 @@ struct StatusMappingTests {
         }
     }
 
+    @Test("Malformed error body still maps the documented status (review r4099351315)",
+          arguments: [
+              (HTTPResponse.Status.unauthorized, KdsAPIError.unauthorized(message: nil)),
+              (.forbidden, .forbidden(message: nil)),
+              (.notFound, .notFound(message: nil)),
+              (.conflict, .conflict(code: .unknown, message: nil)),
+              (.unprocessableContent, .validationError(message: nil)),
+              (.internalServerError, .backendError(message: nil)),
+          ])
+    func malformedErrorBody(status: HTTPResponse.Status, expected: KdsAPIError) async throws {
+        let client = actionApi(status: status, json: "this is not json")
+        do {
+            try await client.applyTicketAction(action, context: context)
+            Issue.record("expected error for \(status.code)")
+        } catch {
+            #expect(error == expected)
+        }
+    }
+
     @Test("Undocumented status surfaces as .undocumented")
     func undocumented() async throws {
         let client = actionApi(status: HTTPResponse.Status(code: 418), json: "{}")
@@ -460,6 +479,16 @@ struct LocalValidationTests {
         settings.apiBaseUrl = "https://kds.example.test"
         #expect(KdsRuntimeContextValidation.requestError(settings) == nil)
     }
+
+    @Test("Station discovery works with no station selected — it finds the station")
+    func stationDiscoveryNeedsNoStation() async throws {
+        let client = api(StubTransport(json: #"{"stations":[]}"#))
+        var unconfigured = context
+        unconfigured.stationId = ""
+
+        let directory = try await client.fetchStations(context: unconfigured)
+        #expect(directory.isEmpty) // request reached the stub, not preflight
+    }
 }
 
 // MARK: - Mapping and sanitization
@@ -505,6 +534,32 @@ struct MappingTests {
         #expect(ticket.items.first?.name == "Позиция") // id-looking name → placeholder
         #expect(ticket.items.first?.modifiers == ["овсяное молоко"]) // t.me scrubbed
         #expect(ticket.items.first?.comment == nil)    // phone scrubbed
+    }
+
+    @Test("A sensitive displayNumber is replaced by an id-derived marker")
+    func displayNumberSanitized() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"ticket-9f4","displayNumber":"guest_77@mail.ru","stationId":"s",
+        "source":"pos","kitchenState":"new","visibleAt":"2026-07-09T10:00:00Z","items":[]}]}
+        """)
+        let ticket = try #require(try await client.fetchActiveTickets(context: context).first)
+        #expect(ticket.displayNumber == "#-9f4")
+    }
+
+    @Test("Line availability preserves the wire's six states")
+    func availabilityStatesPreserved() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"t-a","displayNumber":"A-1","stationId":"s",
+        "source":"pos","kitchenState":"new","visibleAt":"2026-07-09T10:00:00Z",
+        "items":[
+          {"lineId":"l1","name":"a","quantity":1,"availabilityState":"sold_out"},
+          {"lineId":"l2","name":"b","quantity":1,"availabilityState":"stoplisted"},
+          {"lineId":"l3","name":"c","quantity":1,"availabilityState":"blocked"},
+          {"lineId":"l4","name":"d","quantity":1,"availabilityState":"cancelled"}
+        ]}]}
+        """)
+        let ticket = try #require(try await client.fetchActiveTickets(context: context).first)
+        #expect(ticket.items.map(\.availabilityState) == [.soldOut, .stoplisted, .blocked, .cancelled])
     }
 
     @Test("Missing metadata yields nil payment/fiscal")
@@ -677,5 +732,13 @@ struct FactoryTests {
     ])
     func allowedUrls(url: String) throws {
         _ = try KdsAPIs.make(settings: KdsDeviceSettings(apiBaseUrl: url), credentials: nil)
+    }
+
+    @Test("A padded apiBaseUrl trims the same way validation does")
+    func paddedUrl() throws {
+        _ = try KdsAPIs.make(
+            settings: KdsDeviceSettings(apiBaseUrl: "  https://kds.example.com  "),
+            credentials: nil
+        )
     }
 }

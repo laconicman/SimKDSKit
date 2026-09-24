@@ -27,6 +27,21 @@ public enum KdsRuntimeContextValidation {
         )
     }
 
+    /// The stations call carries no station — an unconfigured device must be
+    /// able to discover stations to select. Location + device identity only.
+    public static func directoryError(context: KdsContext) -> String? {
+        if context.locationId.kdsIsBlank {
+            return "KDS locationId is required before GenericKds request"
+        }
+        if context.deviceId.kdsIsBlank {
+            return "KDS deviceId is required before GenericKds request"
+        }
+        if context.deviceId.isPlaceholderToken() {
+            return "KDS deviceId must be configured before GenericKds request"
+        }
+        return nil
+    }
+
     /// Identity-only check for a `KdsContext` snapshot — the URL was already
     /// vetted when the client was built, so it isn't re-litigated per call.
     public static func requestError(context: KdsContext) -> String? {

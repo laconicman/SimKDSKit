@@ -20,7 +20,9 @@ struct LiveKdsAPI: KdsAPI {
     let client: Client
 
     func fetchStations(context: KdsContext) async throws(KdsAPIError) -> [KdsStationDirectoryEntry] {
-        if let error = KdsRuntimeContextValidation.requestError(context: context) {
+        // The directory call carries no stationId — an unconfigured device
+        // must be able to discover stations before it can select one.
+        if let error = KdsRuntimeContextValidation.directoryError(context: context) {
             throw .localValidation(error)
         }
         let output = try await call {
@@ -145,14 +147,19 @@ struct LiveKdsAPI: KdsAPI {
         } catch let error as KdsAPIError {
             throw error
         } catch let error as ClientError {
-            // The runtime decodes documented bodies eagerly, so a 409 whose
-            // body is malformed (or carries a code the spec doesn't know)
-            // arrives here as a DecodingError — it is still a conflict.
-            if error.response?.status == .conflict, error.underlyingError is DecodingError {
-                throw .conflict(code: .unknown, message: nil)
-            }
+            // The runtime decodes documented bodies eagerly, so an empty or
+            // malformed error body arrives here as a DecodingError — the HTTP
+            // status is still authoritative, recover the documented case.
             if error.underlyingError is DecodingError {
-                throw .decoding(underlying: String(describing: error.underlyingError))
+                switch error.response?.status {
+                case .unauthorized?: throw .unauthorized(message: nil)
+                case .forbidden?: throw .forbidden(message: nil)
+                case .notFound?: throw .notFound(message: nil)
+                case .conflict?: throw .conflict(code: .unknown, message: nil)
+                case .unprocessableContent?: throw .validationError(message: nil)
+                case .internalServerError?: throw .backendError(message: nil)
+                default: throw .decoding(underlying: String(describing: error.underlyingError))
+                }
             }
             throw .transport(underlying: error.errorDescription ?? String(describing: error))
         } catch {
@@ -231,8 +238,9 @@ public enum KdsAPIs {
         if let urlError = KdsRuntimeContextValidation.urlSecurityError(settings.apiBaseUrl) {
             throw .localValidation(urlError)
         }
-        // `urlSecurityError` already guarantees a parseable URL.
-        guard let serverURL = URL(string: settings.apiBaseUrl) else {
+        // `urlSecurityError` already guarantees a parseable URL; trim the same
+        // way it does so a pasted URL with padding can't build a wrong one.
+        guard let serverURL = URL(string: settings.apiBaseUrl.trimmingCharacters(in: .whitespaces)) else {
             throw .localValidation("KDS apiBaseUrl is not a valid URL")
         }
         return ModeSwitchingKdsAPI(

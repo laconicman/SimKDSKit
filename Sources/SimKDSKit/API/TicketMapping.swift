@@ -12,7 +12,10 @@ enum TicketMapping {
         let paymentState = metadataPaymentState(schema.metadata)
         return KdsTicket(
             id: schema.ticketId,
-            displayNumber: schema.displayNumber,
+            // The board's most prominent label is backend-supplied — a
+            // sensitive value there gets a deterministic id-derived marker.
+            displayNumber: GuestTextSanitizer.guestVisibleText(schema.displayNumber)
+                ?? "#" + String(schema.ticketId.suffix(4)),
             source: source(schema.source),
             sourceLabel: GuestTextSanitizer.guestVisibleText(schema.sourceLabel),
             status: status(schema.kitchenState, paymentState: paymentState),
@@ -75,12 +78,19 @@ enum TicketMapping {
         }
     }
 
+    /// Line states stay distinct — the board styles a stoplisted line
+    /// differently from a cancelled one. Only `.available` is non-gating at
+    /// the ticket level; that check lives in `isAllowedForKds`.
     private static func availability(
         _ state: Components.Schemas.AvailabilityState?
     ) -> KdsAvailabilityState {
         switch state {
         case .available, nil: .available
-        case .unavailable, .blocked, .stoplisted, .soldOut, .cancelled: .unavailable
+        case .unavailable: .unavailable
+        case .blocked: .blocked
+        case .stoplisted: .stoplisted
+        case .soldOut: .soldOut
+        case .cancelled: .cancelled
         }
     }
 
