@@ -355,6 +355,12 @@ struct FeedEngineTests {
         let state = await restarted.state
         #expect(state.lastActionError?.ticketNumber == "A-43")
         #expect(state.lastActionError?.message == "backend timeout")
+
+        // A successful relaunch clears the stale banner — the board is
+        // connected, the old failure is history.
+        await restarted.start()
+        #expect(await restarted.state.lastActionError == nil)
+        #expect(await restarted.state.connectionState == .connected)
     }
 
     // MARK: - Idempotent retries
@@ -402,6 +408,118 @@ struct FeedEngineTests {
 
         #expect(await api.sentActions.map(\.expectedVersion) == [3, 4, 5])
         #expect(await engine.state.lastActionError == nil)
+    }
+
+    // MARK: - Concurrency
+
+    @Test("A failed action rolls back only its own ticket — a poll that merged meanwhile survives")
+    func rollbackPreservesConcurrentMerge() async throws {
+        let gate = Gate()
+        var extra = seed("A-42")
+        extra.id = "ticket-c99"
+        extra.displayNumber = "C-99"
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            refreshResults: [.success([seed("A-42"), seed("A-43"), extra])],
+            actionResults: [.failure(.backendError(message: "backend timeout"))]
+        )
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setActionHook { await gate.wait() }
+        async let dispatching: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await api.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+
+        await engine.refresh() // lands while the action's backend call is suspended
+        #expect(await status(engine, "A-43") == .inProgress)
+        #expect(await engine.state.tickets.contains { $0.displayNumber == "C-99" })
+
+        await gate.open()
+        await dispatching
+
+        let state = await engine.state
+        #expect(await status(engine, "A-43") == .new) // only the optimistic edit rolls back
+        #expect(state.tickets.contains { $0.displayNumber == "C-99" }) // the merged row survives
+        #expect(await status(engine, "A-42") == .inProgress) // untouched
+    }
+
+    @Test("Dispatches serialize through the backend call")
+    func dispatchesSerialize() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setActionHook {
+            if await api.sentActions.count == 1 { await gate.wait() }
+        }
+        async let first: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await api.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+
+        // A-42 seeds in progress — markReady is its valid next transition.
+        async let second: Void = engine.dispatch(action("markReady", ticket: seed("A-42")))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await status(engine, "A-42") == .inProgress) // still queued behind the first call
+
+        await gate.open()
+        await first
+        await second
+
+        #expect(await status(engine, "A-42") == .ready)
+        #expect(await status(engine, "A-43") == .inProgress)
+        #expect(await api.sentActions.map(\.displayNumber) == ["A-43", "A-42"])
+    }
+
+    @Test("A refresh that lands after a settings change is discarded")
+    func staleRefreshDiscarded() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setRefreshHook { await gate.wait() }
+        async let refreshing: Void = engine.refresh()
+        while await api.refreshCount == 0 { try await Task.sleep(for: .milliseconds(1)) }
+
+        var settings = await engine.state.deviceSettings
+        settings.stationId = "station_bar_cold"
+        await engine.updateSettings(settings)
+        await gate.open()
+        await refreshing
+
+        // The suspended fetch was for the hot bar — it must not repopulate
+        // the board now bound to the cold bar.
+        #expect(await engine.state.tickets.isEmpty)
+        #expect(await engine.state.connectionState == .connected)
+    }
+
+    @Test("A backend-identity change clears the board and its history")
+    func backendChangeClearsBoard() async throws {
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+        await engine.start()
+        await engine.dispatch(action("markReady", ticket: seed("A-42")))
+        #expect(await status(engine, "A-42") == .ready)
+
+        var settings = await engine.state.deviceSettings
+        settings.locationId = "loc-other"
+        await engine.updateSettings(settings)
+
+        // A ready ticket from the old location must not linger as history.
+        #expect(await engine.state.tickets.isEmpty)
+    }
+
+    @Test("A ticket already ready at first fetch gets readyAt stamped at load")
+    func readyAtStampedOnStart() async throws {
+        var ready = seed("A-43")
+        ready.status = .ready
+        ready.readyAt = nil
+        let api = ScriptedKdsAPI(tickets: [seed("A-42"), ready])
+        let engine = makeEngine(api)
+        await engine.start()
+
+        let ticket = await engine.state.tickets.first { $0.displayNumber == "A-43" }
+        #expect(ticket?.readyAt == base) // pickup wait starts at first sight
     }
 
     // MARK: - Observation

@@ -131,6 +131,7 @@ actor ScriptedKdsAPI: KdsAPI {
     private var actionQueue: [Result<Void, KdsAPIError>]
     private var stationsResult: Result<[KdsStationDirectoryEntry], KdsAPIError>
     private var actionHook: (@Sendable () async -> Void)?
+    private var refreshHook: (@Sendable () async -> Void)?
 
     private(set) var sentActions: [KdsAction] = []
     private(set) var fetchCount = 0
@@ -157,6 +158,11 @@ actor ScriptedKdsAPI: KdsAPI {
         actionHook = hook
     }
 
+    /// Same seam on the poll path — lets a test suspend a refresh mid-flight.
+    func setRefreshHook(_ hook: @escaping @Sendable () async -> Void) {
+        refreshHook = hook
+    }
+
     func fetchStations(context: KdsContext) async throws(KdsAPIError) -> [KdsStationDirectoryEntry] {
         stationFetchCount += 1
         return try stationsResult.get()
@@ -169,6 +175,7 @@ actor ScriptedKdsAPI: KdsAPI {
 
     func refresh(context: KdsContext) async throws(KdsAPIError) -> [KdsTicket] {
         refreshCount += 1
+        await refreshHook?()
         return refreshQueue.isEmpty ? fallbackTickets : try refreshQueue.removeFirst().get()
     }
 
@@ -178,5 +185,23 @@ actor ScriptedKdsAPI: KdsAPI {
         if !actionQueue.isEmpty {
             try actionQueue.removeFirst().get()
         }
+    }
+}
+
+/// A one-shot async gate: `wait()` suspends until `open()` releases every
+/// waiter. Engine tests use it to hold a scripted backend call mid-flight.
+actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        for waiter in waiters { waiter.resume() }
+        waiters = []
     }
 }

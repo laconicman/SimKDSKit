@@ -19,6 +19,15 @@ public actor KdsFeedEngine {
     /// reuse the first stamp so the backend sees one idempotency key.
     private var pendingActionOccurredAt: [String: Date] = [:]
     private var continuations: [UUID: AsyncStream<KdsFeedState>.Continuation] = [:]
+    /// Kotlin's `synchronized(dispatchLock)`: action lifecycles serialize so a
+    /// slow backend call can't interleave with a second tap's optimistic edit.
+    private var dispatchTail: Task<Void, Never>?
+    /// Bumped on every settings change — a fetch that started under the old
+    /// backend must not publish under the new one.
+    private var configVersion = 0
+    /// Bumped per fetch — an older poll that finishes after a newer one is
+    /// discarded, never merged.
+    private var fetchTicket = 0
 
     /// Deferred start (Kotlin's `eagerInitialFetch = false`): the engine loads
     /// persisted settings and sits at `.connecting` until `start()` runs the
@@ -61,17 +70,31 @@ public actor KdsFeedEngine {
         let settings = state.deviceSettings
         let context = KdsContext(settings: settings)
         let now = clock()
+        let config = configVersion
+        fetchTicket += 1
+        let mine = fetchTicket
         let directory = (try? await api.fetchStations(context: context))
             ?? state.stationDirectory
         do {
             let tickets = try await api.fetchActiveTickets(context: context)
                 .forDeviceStation(settings)
-            state.tickets = tickets
+            // A settings change or a newer fetch landed while this was in
+            // flight — publishing now would show the old backend's board.
+            guard config == configVersion, mine == fetchTicket else { return }
+            state.tickets = tickets.map { ticket in
+                var ticket = ticket
+                if ticket.status == .ready, ticket.readyAt == nil {
+                    ticket.readyAt = now // first seen ready at this fetch
+                }
+                return ticket
+            }
             state.connectionState = .connected
             state.lastSyncedAt = now
             state.stationDirectory = directory
+            state.lastActionError = nil // a successful start clears the stale banner
             persistAndPublish()
         } catch {
+            guard config == configVersion, mine == fetchTicket else { return }
             let feedError = KdsActionError(
                 ticketNumber: "feed",
                 message: errorMessage(error),
@@ -88,7 +111,20 @@ public actor KdsFeedEngine {
     /// Optimistic dispatch: reduce locally, send, roll back on failure. A
     /// duplicate of an already-applied action never reaches the backend, but a
     /// wrong-state action does — the backend resolves the conflict.
+    /// Dispatches serialize through the backend call — Kotlin's
+    /// `synchronized(dispatchLock)` — so a slow first action can't interleave
+    /// its rollback with a second action's optimistic edit.
     public func dispatch(_ action: KdsAction) async {
+        let previous = dispatchTail
+        let current = Task { [previous] in
+            await previous?.value
+            await runDispatch(action)
+        }
+        dispatchTail = current
+        await current.value
+    }
+
+    private func runDispatch(_ action: KdsAction) async {
         let previousState = state
         let dispatchAction = stabilized(action, for: previousState.deviceSettings)
         let optimisticTickets = KdsReducer.reduce(previousState.tickets, dispatchAction)
@@ -122,13 +158,28 @@ public actor KdsFeedEngine {
                 isFeedError: false,
                 requiresRefresh: error.requiresRefresh
             )
-            state.tickets = previousState.tickets
+            rollBack(dispatchAction, to: previousState)
             state.lastActionError = actionError
             persistAndPublish()
             if error.requiresRefresh {
                 await refreshSnapshot(lastActionError: actionError, settings: previousState.deviceSettings)
             }
         }
+    }
+
+    /// Roll back only the optimistic transition this action owns — anything a
+    /// poll merged meanwhile (other tickets, refreshed fields on this one)
+    /// survives. Wholesaler rollback to `previousState.tickets` would clobber
+    /// those intervening changes.
+    private func rollBack(_ action: KdsAction, to previousState: KdsFeedState) {
+        guard let index = state.tickets.firstIndex(where: { $0.id == action.ticketId }),
+              let before = previousState.tickets.first(where: { $0.id == action.ticketId })
+        else { return } // a snapshot already owns this row — leave it alone
+        var restored = state.tickets[index]
+        restored.status = before.status
+        restored.version = before.version
+        restored.readyAt = before.readyAt
+        state.tickets[index] = restored
     }
 
     /// The poll path (Kotlin `refreshActiveTickets`) — no connection flicker.
@@ -146,14 +197,29 @@ public actor KdsFeedEngine {
 
     /// Settings changed. A new `api` is supplied when connection parameters
     /// moved (the app rebuilds the client); station changes resync the board
-    /// filter and drop the previous station's tickets immediately.
+    /// filter and drop the previous station's tickets immediately. A backend-
+    /// identity change (mode, base URL, location, or a swapped client) drops
+    /// the whole board — retained history from a different backend must not
+    /// survive into the new target's feed.
     public func updateSettings(_ settings: KdsDeviceSettings, api newAPI: (any KdsAPI)? = nil) {
+        let previous = state.deviceSettings
+        let backendChanged = newAPI != nil
+            || previous.backendMode != settings.backendMode
+            || previous.apiBaseUrl != settings.apiBaseUrl
+            || previous.locationId != settings.locationId
         if let newAPI { api = newAPI }
-        if state.deviceSettings.stationId != settings.stationId {
-            state.boardFilters.stationId = settings.stationId
-        }
         state.deviceSettings = settings
-        state.tickets = state.tickets.filter { $0.station.matchesStationId(settings.stationId) }
+        if backendChanged {
+            state.tickets = []
+            pendingActionOccurredAt.removeAll()
+            state.boardFilters.stationId = settings.stationId
+        } else {
+            if previous.stationId != settings.stationId {
+                state.boardFilters.stationId = settings.stationId
+            }
+            state.tickets = state.tickets.filter { $0.station.matchesStationId(settings.stationId) }
+        }
+        configVersion += 1
         persistAndPublish()
     }
 
@@ -178,11 +244,17 @@ public actor KdsFeedEngine {
         let settings = settings ?? state.deviceSettings
         let context = KdsContext(settings: settings)
         let now = clock()
+        let config = configVersion
+        fetchTicket += 1
+        let mine = fetchTicket
         do {
             let refreshed = try await api.refresh(context: context)
                 .forDeviceStation(settings)
             let directory = (try? await api.fetchStations(context: context))
                 ?? state.stationDirectory
+            // A settings change or a newer fetch landed while this was in
+            // flight — publishing now would merge the old backend's board.
+            guard config == configVersion, mine == fetchTicket else { return }
             state.tickets = Self.replacedSnapshot(
                 current: state.tickets,
                 refreshed: refreshed,
@@ -194,6 +266,7 @@ public actor KdsFeedEngine {
             state.lastActionError = lastActionError
             persistAndPublish()
         } catch {
+            guard config == configVersion, mine == fetchTicket else { return }
             let message = errorMessage(error)
             state.connectionState = .offline
             state.lastActionError = lastActionError.map {
