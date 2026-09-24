@@ -14,15 +14,17 @@ domain types, ``KdsAPI``, stores, ``MockKdsAPI``.
 YDelivery pattern). That exists because the API package there *is* the product;
 here the product is the domain + facade, and the generated code is plumbing.
 
-## One client, rebuilt on context change
+## One client, rebuilt on settings change
 
-`Client` is created from a `KdsContext` + `KdsCredentials` snapshot in
-``Client/init(serverURL:credentials:context:)``. Settings change rarely
-(provisioning, manual edit), so the app rebuilds the client rather than
-mutating shared reference state. Context headers (`X-SimKDS-*`,
-`Idempotency-Key`, `X-Request-Id`) travel as generated operation parameters on
-each call; only auth goes through middleware — per-request values belong to the
-caller, per-session values to the chain.
+``KdsAPIs/make(settings:credentials:mock:)`` composes a mock + live pair behind
+``ModeSwitchingKdsAPI``; construction validates the URL's security (remote
+`http://` would carry credentials in cleartext — rejected as
+`.localValidation`). Settings change rarely (provisioning, manual edit), so
+the app rebuilds the client rather than mutating shared reference state.
+Per-request values travel as a `KdsContext` snapshot on each call — context
+headers (`X-SimKDS-*`, `Idempotency-Key`, `X-Request-Id`) are generated
+operation parameters; only auth goes through middleware, placed innermost so
+caller-supplied logging middlewares never see the credential header.
 
 ## Strict decoding
 

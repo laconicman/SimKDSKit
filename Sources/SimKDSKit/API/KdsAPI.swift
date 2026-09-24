@@ -219,14 +219,19 @@ struct ModeSwitchingKdsAPI: KdsAPI {
 /// hides both behind the facade. Mock and live are composed here so a mode
 /// flip in settings takes effect on the next call without rebuilding.
 public enum KdsAPIs {
-    /// The app-facing factory. `settings.apiBaseUrl` must already pass
-    /// `KdsRuntimeContextValidation` (https / loopback rules) — a bad URL is a
-    /// programming error surfaced as `.localValidation`, not a crash.
+    /// The app-facing factory. `settings.apiBaseUrl` is vetted here — remote
+    /// `http://` would send the credential headers in cleartext, so URL
+    /// security is a construction-time error, not a per-call one. Identity
+    /// fields stay per-call (mock mode runs without them).
     public static func make(
         settings: KdsDeviceSettings,
         credentials: KdsCredentials?,
         mock: any KdsAPI = MockKdsAPI()
     ) throws(KdsAPIError) -> any KdsAPI {
+        if let urlError = KdsRuntimeContextValidation.urlSecurityError(settings.apiBaseUrl) {
+            throw .localValidation(urlError)
+        }
+        // `urlSecurityError` already guarantees a parseable URL.
         guard let serverURL = URL(string: settings.apiBaseUrl) else {
             throw .localValidation("KDS apiBaseUrl is not a valid URL")
         }
@@ -307,12 +312,15 @@ private extension Date {
         var calendar = Calendar(identifier: .iso8601)
         calendar.timeZone = .gmt
         let components = calendar.dateComponents(
-            [.year, .month, .day, .hour, .minute, .second], from: self
+            [.year, .month, .day, .hour, .minute, .second, .nanosecond], from: self
         )
+        // Milliseconds ride in the key — two same-second actions on the same
+        // ticket+version must not dedupe into one request on the backend.
         return String(
-            format: "%04d-%02d-%02dT%02d:%02d:%02dZ",
+            format: "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
             components.year ?? 0, components.month ?? 0, components.day ?? 0,
-            components.hour ?? 0, components.minute ?? 0, components.second ?? 0
+            components.hour ?? 0, components.minute ?? 0, components.second ?? 0,
+            (components.nanosecond ?? 0) / 1_000_000
         )
     }
 }

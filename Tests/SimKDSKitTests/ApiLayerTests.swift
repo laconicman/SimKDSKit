@@ -69,6 +69,24 @@ struct AuthMiddlewareTests {
         #expect(request.header("Authorization") == nil)
         #expect(request.header("X-SimKDS-Api-Key") == nil)
     }
+
+    @Test("Caller middleware runs before auth — credentials never reach a logger")
+    func authIsInnermost() async throws {
+        let spy = RequestRecorder()
+        let wire = RequestRecorder()
+        let client = LiveKdsAPI(client: Client(
+            serverURL: serverURL,
+            credentials: .bearer("s3cret"),
+            transport: RecordingTransport(recorder: wire),
+            additionalMiddlewares: [SpyMiddleware(recorder: spy)]
+        ))
+
+        _ = try await client.fetchActiveTickets(context: context)
+
+        #expect(await spy.request?.header("Authorization") == nil)
+        #expect(await spy.request?.header("X-SimKDS-Api-Key") == nil)
+        #expect(await wire.request?.header("Authorization") == "Bearer s3cret")
+    }
 }
 
 // MARK: - Context headers and request shape
@@ -166,6 +184,26 @@ struct RequestHeaderTests {
         )
         let third = await recorder.request?.header("Idempotency-Key")
         #expect(third != first)
+    }
+
+    @Test("Same-second actions on one ticket get distinct keys — ms ride in the token")
+    func sameSecondKeysDiffer() async throws {
+        let recorder = RequestRecorder()
+        let client = api(RecordingTransport(recorder: recorder, status: .noContent, json: ""))
+        let base = Date(timeIntervalSince1970: 1_783_200_000)
+
+        try await client.applyTicketAction(
+            .start(ticketId: "t-1", displayNumber: "A-1", expectedVersion: 4, occurredAt: base.addingTimeInterval(0.1)),
+            context: context
+        )
+        let first = await recorder.request?.header("Idempotency-Key")
+
+        try await client.applyTicketAction(
+            .start(ticketId: "t-1", displayNumber: "A-1", expectedVersion: 4, occurredAt: base.addingTimeInterval(0.9)),
+            context: context
+        )
+        let second = await recorder.request?.header("Idempotency-Key")
+        #expect(first != nil && second != nil && first != second)
     }
 }
 
@@ -514,21 +552,50 @@ struct MappingTests {
 
 @Suite("Mock backend")
 struct MockKdsAPITests {
-    @Test("Seeds carry the scripted tickets; refresh upserts the trio")
-    func refreshInjects() async throws {
+    @Test("Seeds and refresh serve only the context's station, like the live endpoint")
+    func stationScopedFeed() async throws {
         let mock = MockKdsAPI(now: Date(timeIntervalSince1970: 1_783_200_000))
+        // Shared fixture context is station_bar_hot: A-42 + A-43 only.
         let seeded = try await mock.fetchActiveTickets(context: context)
-        #expect(seeded.count == 4)
+        #expect(seeded.map(\.displayNumber) == ["A-42", "A-43"])
 
         let after = try await mock.refresh(context: context)
         let numbers = after.map(\.displayNumber)
-        #expect(numbers.contains("A-44"))
-        #expect(numbers.contains("M-13"))
-        // ticket-hidden re-emitted as paid/accepted
-        let hidden = try #require(after.first { $0.id == "ticket-hidden" })
-        #expect(hidden.paymentState == .paid)
-        #expect(await mock.refreshCount == 1)
+        #expect(numbers.contains("M-13")) // scripted barHot arrival
+        #expect(!numbers.contains("A-44")) // scripted kitchen arrival stays off this feed
+
+        var kitchenContext = context
+        kitchenContext.stationId = "station_kitchen"
+        let kitchenFeed = try await mock.refresh(context: kitchenContext)
+        let kitchenNumbers = kitchenFeed.map(\.displayNumber)
+        #expect(kitchenNumbers.contains("A-44"))
+        let hidden = try #require(kitchenFeed.first { $0.id == "ticket-hidden" })
+        #expect(hidden.paymentState == .paid) // scripted flip reaches its station
+        #expect(await mock.refreshCount == 2)
         #expect(await mock.fetchCount == 1)
+    }
+
+    @Test("Refresh keeps an existing scripted ticket's visibleAt — the wait baseline")
+    func refreshPreservesVisibleAt() async throws {
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
+        let mock = MockKdsAPI(tickets: [], clock: { clock.now })
+
+        var kitchenContext = context
+        kitchenContext.stationId = "station_kitchen"
+        _ = try await mock.refresh(context: kitchenContext)
+        clock.advance(by: 30)
+        let second = try await mock.refresh(context: kitchenContext)
+
+        let a44 = try #require(second.first { $0.id == "ticket-a44" })
+        #expect(a44.visibleAt == Date(timeIntervalSince1970: 1_783_200_000))
+    }
+
+    @Test("Demo directory uses canonical station_* ids that filters can match")
+    func directoryIdsCanonical() {
+        let directory = MockKdsAPI.defaultDirectory()
+        #expect(directory.map(\.stationId) == ["station_kitchen", "station_bar_hot", "station_bar_cold"])
+        let barHot = MockKdsAPI.seedTickets(now: Date()).first { $0.station == .barHot }
+        #expect(barHot?.station.matchesStationId("station_bar_hot") == true)
     }
 
     @Test("failNextAction fires once then clears")
@@ -592,5 +659,23 @@ struct FactoryTests {
         } catch {
             #expect(error.isLocalValidationFailure)
         }
+    }
+
+    @Test("Remote http:// is rejected at construction — credentials would travel cleartext")
+    func remoteHttpRejected() throws {
+        let settings = KdsDeviceSettings(apiBaseUrl: "http://kds.example.com")
+        do {
+            _ = try KdsAPIs.make(settings: settings, credentials: .bearer("s3cret"))
+            Issue.record("expected localValidation")
+        } catch {
+            #expect(error.isLocalValidationFailure)
+        }
+    }
+
+    @Test("Loopback http and remote https both build", arguments: [
+        "http://localhost:8088", "http://127.0.0.1:8088", "https://kds.example.com",
+    ])
+    func allowedUrls(url: String) throws {
+        _ = try KdsAPIs.make(settings: KdsDeviceSettings(apiBaseUrl: url), credentials: nil)
     }
 }

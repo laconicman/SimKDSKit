@@ -80,6 +80,13 @@ public enum KdsRuntimeContextValidation {
         return nil
     }
 
+    /// URL-only check, run at client construction — a remote `http://` base
+    /// URL would send credential headers in cleartext. Identity fields are a
+    /// per-call concern and are not checked here.
+    public static func urlSecurityError(_ apiBaseUrl: String) -> String? {
+        realBackendUrlSecurityError(apiBaseUrl)
+    }
+
     /// Real backends are HTTPS; loopback stays HTTP for the local mock server.
     /// `10.0.2.2` is dropped — the Android-emulator host means nothing on iOS.
     private static func realBackendUrlSecurityError(_ apiBaseUrl: String) -> String? {

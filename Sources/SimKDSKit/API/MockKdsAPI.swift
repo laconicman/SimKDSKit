@@ -35,43 +35,52 @@ public actor MockKdsAPI: KdsAPI {
         return Self.defaultDirectory()
     }
 
-    /// The demo directory — covers every station the scripted tickets use.
+    /// The demo directory — covers every station the scripted tickets use,
+    /// with canonical `station_*` ids so station filters can match them.
     public static func defaultDirectory() -> [KdsStationDirectoryEntry] {
         [
             KdsStationDirectoryEntry(
-                stationId: "kitchen", route: "kitchen", label: "KITCHEN",
+                stationId: "station_kitchen", route: "kitchen", label: "KITCHEN",
                 displayName: "Kitchen", sortOrder: 10,
-                activeTicketsPath: "/api/v1/kds/stations/kitchen/tickets/active"
+                activeTicketsPath: "/api/v1/kds/stations/station_kitchen/tickets/active"
             ),
             KdsStationDirectoryEntry(
-                stationId: "bar_hot", route: "bar_hot", label: "BAR-HOT",
+                stationId: "station_bar_hot", route: "bar_hot", label: "BAR-HOT",
                 displayName: "Hot bar", sortOrder: 20,
-                activeTicketsPath: "/api/v1/kds/stations/bar_hot/tickets/active"
+                activeTicketsPath: "/api/v1/kds/stations/station_bar_hot/tickets/active"
             ),
             KdsStationDirectoryEntry(
-                stationId: "bar_cold", route: "bar_cold", label: "BAR-COLD",
+                stationId: "station_bar_cold", route: "bar_cold", label: "BAR-COLD",
                 displayName: "Cold bar", sortOrder: 30,
-                activeTicketsPath: "/api/v1/kds/stations/bar_cold/tickets/active"
+                activeTicketsPath: "/api/v1/kds/stations/station_bar_cold/tickets/active"
             ),
         ]
     }
 
+    /// Same contract as the live endpoint — one station's feed, not the whole
+    /// mock's state (a single-station device must not see other posts' work).
     public func fetchActiveTickets(context: KdsContext) async throws(KdsAPIError) -> [KdsTicket] {
         fetchCount += 1
         lastFetchContext = context
-        return tickets
+        return tickets.filter { $0.station.matchesStationId(context.stationId) }
     }
 
     /// The poll path: every refresh upserts the scripted trio, same as the
-    /// Kotlin `refresh` — the demo board visibly changes on each poll.
+    /// Kotlin `refresh` — the demo board visibly changes on each poll. An
+    /// existing ticket keeps its `visibleAt`: it is the wait-time baseline,
+    /// and a poll that restated it would zero the timer forever.
     public func refresh(context: KdsContext) async throws(KdsAPIError) -> [KdsTicket] {
         refreshCount += 1
         lastRefreshContext = context
         let now = clock()
         for ticket in [Self.fakePosOrder(now: now), Self.fakeOnlineOrder(now: now), Self.fakeFiscalReadyOrder(now: now)] {
-            upsert(ticket)
+            var scripted = ticket
+            if let existing = tickets.first(where: { $0.id == ticket.id }) {
+                scripted.visibleAt = existing.visibleAt
+            }
+            upsert(scripted)
         }
-        return tickets
+        return tickets.filter { $0.station.matchesStationId(context.stationId) }
     }
 
     public func applyTicketAction(_ action: KdsAction, context: KdsContext) async throws(KdsAPIError) {

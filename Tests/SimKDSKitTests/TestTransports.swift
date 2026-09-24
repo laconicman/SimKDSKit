@@ -65,6 +65,45 @@ struct RecordingTransport: ClientTransport {
     }
 }
 
+/// Records the request as this middleware sees it. Placed ahead of auth in
+/// the chain, a nil credential header on the recording proves auth runs
+/// innermost and never leaks secrets to caller-supplied middleware.
+struct SpyMiddleware: ClientMiddleware {
+    let recorder: RequestRecorder
+
+    func intercept(
+        _ request: HTTPRequest,
+        body: HTTPBody?,
+        baseURL: URL,
+        operationID: String,
+        next: (HTTPRequest, HTTPBody?, URL) async throws -> (HTTPResponse, HTTPBody?)
+    ) async throws -> (HTTPResponse, HTTPBody?) {
+        await recorder.record(request, body: nil)
+        return try await next(request, body, baseURL)
+    }
+}
+
+/// A mutable clock for scripted-time tests — the Kotlin suite's `var now`,
+/// lock-guarded so it can feed a `@Sendable` clock closure.
+final class MutableClock: @unchecked Sendable {
+    private var value: Date
+    private let lock = NSLock()
+
+    init(_ now: Date) { value = now }
+
+    var now: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        value.addTimeInterval(interval)
+        lock.unlock()
+    }
+}
+
 /// Fails the way a real network failure does.
 struct FailingTransport: ClientTransport {
     struct Failure: Error {}
