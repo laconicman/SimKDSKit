@@ -103,9 +103,12 @@ struct KdsReducerTests {
         #expect(Fixtures.displayNumbers(board.new) == ["A-42", "M-11", "A-43"])
     }
 
-    @Test func unavailableTicketOrLineIsNotVisible() {
+    @Test func unavailableTicketIsHiddenButUnavailableLineIsDisplayMetadata() {
         var unavailableTicket = Fixtures.ticket("U-1", status: .new)
         unavailableTicket.availabilityState = .unavailable
+        // A ticket the backend returned stays on the board even when one line
+        // is unavailable — the line is marked, the available lines are still
+        // cooked (Generic owns the active set, not the client).
         let unavailableLine = Fixtures.ticket("U-2", status: .new, items: [
             KdsTicketItem(name: "Какао", quantity: 1, availabilityState: .unavailable),
         ])
@@ -113,7 +116,50 @@ struct KdsReducerTests {
 
         let board = KdsReducer.visibleBoard([unavailableTicket, unavailableLine, accepted])
 
-        #expect(Fixtures.displayNumbers(board.new) == ["A-10"])
+        #expect(Fixtures.displayNumbers(board.new) == ["U-2", "A-10"])
+        #expect(board.new.first?.items.first?.availabilityState == .unavailable)
+    }
+
+    @Test func staleSnapshotKeepsOptimisticVersionBump() {
+        // Start@3 → local inProgress@4; a stale poll reporting new@3 must not
+        // roll the version back, or the next action 409s (review r4099014072).
+        var local = Fixtures.ticket("A-50", status: .new, version: 3)
+        local = KdsReducer.reduce([local], .start(
+            ticketId: local.id, displayNumber: local.displayNumber,
+            expectedVersion: 3, occurredAt: baseTime
+        )).single()
+        #expect(local.version == 4)
+
+        let staleRemote = Fixtures.ticket("A-50", status: .new, version: 3)
+        let merged = KdsReducer.mergeRemoteTicket([local], remoteTicket: staleRemote, at: baseTime).single()
+
+        #expect(merged.status == .inProgress)
+        #expect(merged.version == 4)
+    }
+
+    @Test func markReadyStampsReadyAtFromActionAndMergeKeepsIt() {
+        let inProgress = Fixtures.ticket("A-51", status: .inProgress, version: 4)
+        let ready = KdsReducer.reduce([inProgress], .markReady(
+            ticketId: inProgress.id, displayNumber: inProgress.displayNumber,
+            expectedVersion: 4, occurredAt: baseTime.addingTimeInterval(480)
+        )).single()
+        #expect(ready.readyAt == baseTime.addingTimeInterval(480))
+
+        // A stale poll reporting in_progress keeps both status and the stamp.
+        let stale = Fixtures.ticket("A-51", status: .inProgress, version: 4)
+        let merged = KdsReducer.mergeRemoteTicket(
+            [ready], remoteTicket: stale, at: baseTime.addingTimeInterval(600)
+        ).single()
+        #expect(merged.status == .ready)
+        #expect(merged.readyAt == baseTime.addingTimeInterval(480))
+    }
+
+    @Test func remoteTicketFirstSeenReadyIsStampedAtPollTime() {
+        let remoteReady = Fixtures.ticket("A-52", status: .ready, version: 5)
+        let merged = KdsReducer.mergeRemoteTicket(
+            [], remoteTicket: remoteReady, at: baseTime.addingTimeInterval(300)
+        ).single()
+        #expect(merged.readyAt == baseTime.addingTimeInterval(300))
     }
 
     @Test func visibleTicketsAreSortedByVisibleAt() {
@@ -144,7 +190,7 @@ struct KdsReducerTests {
         remoteUpdate.source = .online
         remoteUpdate.items = [KdsTicketItem(name: "Раф ванильный", quantity: 2)]
 
-        let merged = KdsReducer.mergeRemoteTicket([existing], remoteTicket: remoteUpdate)
+        let merged = KdsReducer.mergeRemoteTicket([existing], remoteTicket: remoteUpdate, at: baseTime)
 
         #expect(merged.count == 1)
         #expect(merged.single().source == .online)
@@ -157,7 +203,7 @@ struct KdsReducerTests {
         var staleRemote = local
         staleRemote.status = .new
 
-        let merged = KdsReducer.mergeRemoteTicket([local], remoteTicket: staleRemote)
+        let merged = KdsReducer.mergeRemoteTicket([local], remoteTicket: staleRemote, at: baseTime)
 
         #expect(merged.single().status == .ready)
     }
@@ -167,7 +213,7 @@ struct KdsReducerTests {
         var staleRemote = completed
         staleRemote.status = .inProgress
 
-        let merged = KdsReducer.mergeRemoteTicket([completed], remoteTicket: staleRemote)
+        let merged = KdsReducer.mergeRemoteTicket([completed], remoteTicket: staleRemote, at: baseTime)
         let board = KdsReducer.visibleBoard(merged)
 
         #expect(merged.single().status == .completed)
@@ -180,7 +226,7 @@ struct KdsReducerTests {
         refundedRemote.status = .inProgress
         refundedRemote.paymentState = .refunded
 
-        let merged = KdsReducer.mergeRemoteTicket([completed], remoteTicket: refundedRemote)
+        let merged = KdsReducer.mergeRemoteTicket([completed], remoteTicket: refundedRemote, at: baseTime)
         let board = KdsReducer.visibleBoard(merged)
 
         #expect(merged.single().status == .completed)
@@ -194,7 +240,7 @@ struct KdsReducerTests {
         cancelledRemote.status = .cancelled
         cancelledRemote.paymentState = .refunded
 
-        let merged = KdsReducer.mergeRemoteTicket([active], remoteTicket: cancelledRemote)
+        let merged = KdsReducer.mergeRemoteTicket([active], remoteTicket: cancelledRemote, at: baseTime)
         let board = KdsReducer.visibleBoard(merged)
 
         #expect(merged.single().status == .cancelled)
@@ -209,7 +255,7 @@ struct KdsReducerTests {
         recovered.fiscalState = .accepted
         recovered.version = 2
 
-        let merged = KdsReducer.mergeRemoteTicket([blocked], remoteTicket: recovered)
+        let merged = KdsReducer.mergeRemoteTicket([blocked], remoteTicket: recovered, at: baseTime)
         let board = KdsReducer.visibleBoard(merged)
 
         #expect(merged.single().status == .new)

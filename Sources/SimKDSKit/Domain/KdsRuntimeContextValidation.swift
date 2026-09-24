@@ -4,12 +4,45 @@ import Foundation
 /// `KdsRuntimeContextValidation.kt`, Generic contract only). Error strings keep
 /// the Android wording — the operator sees the same sentences.
 public enum KdsRuntimeContextValidation {
+    /// Full check on settings — URL security plus identity fields.
     public static func requestError(_ settings: KdsDeviceSettings) -> String? {
-        contextError(settings, requireActor: false)
+        if let urlError = realBackendUrlSecurityError(settings.apiBaseUrl) {
+            return urlError
+        }
+        return identityError(
+            locationId: settings.locationId, stationId: settings.stationId,
+            deviceId: settings.deviceId, actorId: settings.actorId,
+            requireActor: false
+        )
     }
 
     public static func actionError(_ settings: KdsDeviceSettings) -> String? {
-        contextError(settings, requireActor: true)
+        if let urlError = realBackendUrlSecurityError(settings.apiBaseUrl) {
+            return urlError
+        }
+        return identityError(
+            locationId: settings.locationId, stationId: settings.stationId,
+            deviceId: settings.deviceId, actorId: settings.actorId,
+            requireActor: true
+        )
+    }
+
+    /// Identity-only check for a `KdsContext` snapshot — the URL was already
+    /// vetted when the client was built, so it isn't re-litigated per call.
+    public static func requestError(context: KdsContext) -> String? {
+        identityError(
+            locationId: context.locationId, stationId: context.stationId,
+            deviceId: context.deviceId, actorId: context.actorId,
+            requireActor: false
+        )
+    }
+
+    public static func actionError(context: KdsContext) -> String? {
+        identityError(
+            locationId: context.locationId, stationId: context.stationId,
+            deviceId: context.deviceId, actorId: context.actorId,
+            requireActor: true
+        )
     }
 
     public static func isPlaceholderActorId(_ value: String) -> Bool {
@@ -19,26 +52,29 @@ public enum KdsRuntimeContextValidation {
         ])
     }
 
-    private static func contextError(_ settings: KdsDeviceSettings, requireActor: Bool) -> String? {
-        if let urlError = realBackendUrlSecurityError(settings.apiBaseUrl) {
-            return urlError
+    private static func identityError(
+        locationId: String, stationId: String, deviceId: String,
+        actorId: String, requireActor: Bool
+    ) -> String? {
+        if locationId.kdsIsBlank {
+            return "KDS locationId is required before GenericKds request"
         }
-        if settings.stationId.kdsIsBlank {
+        if stationId.kdsIsBlank {
             return "KDS stationId is required before GenericKds request"
         }
-        if settings.stationId.isPlaceholderToken() {
+        if stationId.isPlaceholderToken() {
             return "KDS stationId must be configured before GenericKds request"
         }
-        if settings.deviceId.kdsIsBlank {
+        if deviceId.kdsIsBlank {
             return "KDS deviceId is required before GenericKds request"
         }
-        if settings.deviceId.isPlaceholderToken() {
+        if deviceId.isPlaceholderToken() {
             return "KDS deviceId must be configured before GenericKds request"
         }
-        if requireActor && settings.actorId.kdsIsBlank {
+        if requireActor && actorId.kdsIsBlank {
             return "KDS actorId is required before GenericKds action"
         }
-        if requireActor && isPlaceholderActorId(settings.actorId) {
+        if requireActor && isPlaceholderActorId(actorId) {
             return "KDS actorId must be configured before GenericKds action"
         }
         return nil
@@ -51,7 +87,8 @@ public enum KdsRuntimeContextValidation {
               let scheme = url.scheme?.lowercased() else {
             return "KDS Real API requires HTTPS"
         }
-        if scheme == "https" { return nil }
+        // `https://` with no host parses but reaches nothing — reject it.
+        if scheme == "https" { return url.host?.kdsIsBlank == false ? nil : "KDS Real API requires HTTPS" }
         if scheme == "http" && (url.host ?? "").isLoopbackDevelopmentHost { return nil }
         return "KDS Real API requires HTTPS"
     }

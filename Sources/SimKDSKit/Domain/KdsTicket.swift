@@ -101,7 +101,9 @@ public struct KdsStation: Sendable, Hashable {
 
 public struct KdsTicketItem: Sendable, Hashable {
     public var name: String
-    public var quantity: Int
+    /// The spec's `quantity` is a positive *number* — weighted items exist
+    /// (0.5 kg), so this stays fractional. Views format it.
+    public var quantity: Double
     public var modifiers: [String]
     public var comment: String?
     public var recipeLines: [String]
@@ -109,7 +111,7 @@ public struct KdsTicketItem: Sendable, Hashable {
 
     public init(
         name: String,
-        quantity: Int,
+        quantity: Double,
         modifiers: [String] = [],
         comment: String? = nil,
         recipeLines: [String] = [],
@@ -133,6 +135,11 @@ public struct KdsTicket: Sendable, Hashable, Identifiable {
     public var paymentState: KdsPaymentState?
     public var fiscalState: KdsFiscalState?
     public var visibleAt: Date
+    /// When this client first saw the ticket in `.ready` — the pickup-wait
+    /// baseline. Stamped by the reducer (action `occurredAt` on an optimistic
+    /// mark-ready, poll time when a remote ticket turns ready); `nil` while
+    /// the ticket has never been ready.
+    public var readyAt: Date?
     public var slaDueAt: Date?
     public var version: Int?
     public var station: KdsStation
@@ -149,6 +156,7 @@ public struct KdsTicket: Sendable, Hashable, Identifiable {
         paymentState: KdsPaymentState? = nil,
         fiscalState: KdsFiscalState? = nil,
         visibleAt: Date,
+        readyAt: Date? = nil,
         slaDueAt: Date? = nil,
         version: Int? = nil,
         station: KdsStation = .barHot,
@@ -164,6 +172,7 @@ public struct KdsTicket: Sendable, Hashable, Identifiable {
         self.paymentState = paymentState
         self.fiscalState = fiscalState
         self.visibleAt = visibleAt
+        self.readyAt = readyAt
         self.slaDueAt = slaDueAt
         self.version = version
         self.station = station
@@ -172,16 +181,26 @@ public struct KdsTicket: Sendable, Hashable, Identifiable {
         self.items = items
     }
 
+    /// Cook-side wait — since the ticket appeared.
     public func waitDuration(now: Date) -> Duration {
         .seconds(max(0, Int(now.timeIntervalSince(visibleAt))))
     }
 
-    /// Visibility on the kitchen board. Generic KDS: status + availability only
-    /// — the backend already decided payment/fiscal visibility (delta 5).
+    /// Pickup-side wait — since the ticket went ready on this client.
+    /// `readyAt` is stamped by the reducer; the `visibleAt` fallback only
+    /// covers hand-built fixtures.
+    public func readyWaitDuration(now: Date) -> Duration {
+        .seconds(max(0, Int(now.timeIntervalSince(readyAt ?? visibleAt))))
+    }
+
+    /// Visibility on the kitchen board. Generic KDS: status + a ticket-level
+    /// availability verdict — the backend already decided which tickets are
+    /// active (payment/fiscal gate is gone, delta 5), so a per-line
+    /// `availabilityState` is display metadata and never hides a ticket the
+    /// backend returned.
     public var isAllowedForKds: Bool {
         ![.completed, .cancelled, .blocked].contains(status)
             && availabilityState == .available
-            && items.allSatisfy { $0.availabilityState == .available }
     }
 }
 

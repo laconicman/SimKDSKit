@@ -57,6 +57,58 @@ struct KdsProvisioningTests {
         }
     }
 
+    @Test func rejectsSeparatorVariantsOfAuthKeys() {
+        // `api_key` / `bearer_token` are the same words as `apiKey` /
+        // `bearerToken` once separators are stripped (review r4099014937).
+        let current = KdsDeviceSettings(apiBaseUrl: "https://api.example.test")
+        for rawUrl in [
+            "simkds://provision?api_key=dev-key",
+            "simkds://provision?bearer_token=dev-token",
+            "simkds://provision?Authorization=Bearer%20x",
+            "simkds://provision?client-secret=s3cret",
+        ] {
+            #expect(KdsProvisioning.settings(from: rawUrl, into: current) == nil)
+        }
+    }
+
+    @Test func stationOnlyLinkKeepsMockMode() {
+        // A station choice is board-local; it must not flip a demo tablet to
+        // a real backend it has no credentials for (review r4099014251).
+        let outcome = KdsProvisioning.settings(
+            from: "simkds://provision?station=bar_cold",
+            into: KdsDeviceSettings(backendMode: .mock)
+        )
+        #expect(outcome?.settings.backendMode == .mock)
+        #expect(outcome?.settings.stationId == "station_bar_cold")
+    }
+
+    @Test func deviceOnlyLinkKeepsMockMode() {
+        let outcome = KdsProvisioning.settings(
+            from: "simkds://provision?deviceId=kds_ipad_01&actorId=barista_01",
+            into: KdsDeviceSettings(backendMode: .mock)
+        )
+        #expect(outcome?.settings.backendMode == .mock)
+    }
+
+    @Test func explicitModeParamStillSwitches() {
+        let outcome = KdsProvisioning.settings(
+            from: "simkds://provision?mode=real&api=https%3A%2F%2Fkds.example.test",
+            into: KdsDeviceSettings(backendMode: .mock)
+        )
+        #expect(outcome?.settings.backendMode == .real)
+    }
+
+    @Test func conflictingStationParamsLabelFollowsStationId() {
+        // `station` and `stationId` disagree → the id owns routing, so the
+        // label derives from it too (review r4099014572).
+        let outcome = KdsProvisioning.settings(
+            from: "simkds://provision?station=pastry&stationId=station_drinks",
+            into: KdsDeviceSettings(backendMode: .mock)
+        )
+        #expect(outcome?.settings.stationId == "station_drinks")
+        #expect(outcome?.settings.stationLabel == "DRINKS")
+    }
+
     @Test func rejectsNonGenericContractLinks() {
         // Android mapped these to SimCafeAlpha/LegacyShell; this build speaks
         // Generic only, so the link is rejected rather than half-applied.

@@ -59,6 +59,17 @@ struct KdsBoardLayoutTests {
         #expect(second["ticket-R-01"] == .seconds(60))
     }
 
+    @Test func readyWaitMeasuresFromReadyTransitionNotAppearance() {
+        // Appeared at +0, went ready at +480, first snapshot at +482 —
+        // pickup wait is 2s, not 8m2s of prep time (review r4099014457).
+        var ticket = Fixtures.ticket("R-09", status: .ready, visibleAt: baseTime)
+        ticket.readyAt = baseTime.addingTimeInterval(480)
+        let snapshot = KdsBoardLayout.snapshotReadyWaitDurations(
+            readyTickets: [ticket], now: baseTime.addingTimeInterval(482), previous: [:]
+        )
+        #expect(snapshot["ticket-R-09"] == .seconds(2))
+    }
+
     @Test func preservesReadyElapsedSnapshotForMultipleTicketsAfterClockAdvance() {
         let tickets = [
             Fixtures.ticket("R-01", status: .ready, visibleAt: baseTime.addingTimeInterval(10)),

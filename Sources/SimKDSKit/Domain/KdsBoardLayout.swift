@@ -41,10 +41,11 @@ public struct KdsBoardLayout: Sendable, Hashable {
         return columns
     }
 
-    /// Ready-wait is measured `visibleAt → first snapshot`, then frozen: a
-    /// ticket already in `previous` keeps its earlier value, so timers don't
-    /// keep climbing while the order waits for pickup. `statusUpdatedAt` was
-    /// dropped with the Generic-spec cut — the snapshot map carries the freeze.
+    /// Ready-wait is measured from the ready transition (`readyAt`, stamped by
+    /// the reducer) to the first snapshot, then frozen: a ticket already in
+    /// `previous` keeps its earlier value, so timers don't keep climbing while
+    /// the order waits for pickup. `statusUpdatedAt` was dropped with the
+    /// Generic-spec cut — `readyAt` + this map carry the semantics instead.
     public static func snapshotReadyWaitDurations(
         readyTickets: [KdsTicket],
         now: Date,
@@ -52,7 +53,7 @@ public struct KdsBoardLayout: Sendable, Hashable {
     ) -> [String: Duration] {
         var snapshot = [String: Duration]()
         for ticket in readyTickets {
-            snapshot[ticket.id] = previous[ticket.id] ?? ticket.waitDuration(now: now)
+            snapshot[ticket.id] = previous[ticket.id] ?? ticket.readyWaitDuration(now: now)
         }
         return snapshot
     }

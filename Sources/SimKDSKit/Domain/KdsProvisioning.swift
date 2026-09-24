@@ -42,15 +42,18 @@ public enum KdsProvisioning {
         }
     }
 
+    /// Compared against keys with all separators stripped, so `api_key`,
+    /// `api-key`, and `apikey` are the same word.
     private static let authParamKeys: Set<String> = [
-        "apikey", "token", "bearertoken", "user", "username",
-        "basicauthusername", "password", "basicauthpassword",
+        "apikey", "token", "bearertoken", "accesstoken", "refreshtoken",
+        "authorization", "auth", "secret", "clientsecret",
+        "user", "username", "password", "basicauthusername", "basicauthpassword",
     ]
 
-    private static let connectionParamKeys: Set<String> = [
+    /// Params that re-target the backend — only these justify flipping a mock
+    /// device to real mode. Station/device/actor choices are board-local.
+    private static let backendTargetParamKeys: Set<String> = [
         "api", "apibaseurl", "backendbaseurl", "locationid", "location", "cafeid",
-        "station", "stationroute", "route", "stationid", "devicename", "deviceid",
-        "actorid", "mode", "backendmode", "contract", "httpcontract",
     ]
 
     public static func settings(
@@ -65,7 +68,7 @@ public enum KdsProvisioning {
 
         let params = parseQuery(components.percentEncodedQuery)
         if params.contains(where: { key, value in
-            authParamKeys.contains(key.lowercased()) && !value.kdsIsBlank
+            authParamKeys.contains(key.separatorStripped) && !value.kdsIsBlank
         }) {
             return nil
         }
@@ -86,8 +89,8 @@ public enum KdsProvisioning {
 
         let apiBaseUrl = params.firstNonBlank("api", "apiBaseUrl", "backendBaseUrl") ?? current.apiBaseUrl
         let locationId = params.firstNonBlank("locationId", "location", "cafeId") ?? current.locationId
-        let hasConnectionParams = params.contains { key, value in
-            connectionParamKeys.contains(key.lowercased()) && !value.kdsIsBlank
+        let hasBackendTargetParams = params.contains { key, value in
+            backendTargetParamKeys.contains(key.separatorStripped) && !value.kdsIsBlank
         }
         let clearsCredentials = current.apiBaseUrl.trimmedTrailingSlash != apiBaseUrl.trimmedTrailingSlash
             || current.locationId != locationId
@@ -110,7 +113,7 @@ public enum KdsProvisioning {
             ?? ""
         next.backendMode = params.firstNonBlank("mode", "backendMode")
             .flatMap(backendMode(from:))
-            ?? (hasConnectionParams ? .real : current.backendMode)
+            ?? (hasBackendTargetParams ? .real : current.backendMode)
 
         return KdsProvisioningOutcome(settings: next, clearsStoredCredentials: clearsCredentials)
     }
@@ -160,6 +163,11 @@ public enum KdsProvisioning {
         current: KdsDeviceSettings
     ) -> String {
         if stationToken == nil && stationIdParam == nil { return current.stationLabel }
+        // Both station params present → the explicit id owns routing, so the
+        // label must come from it too (not from a disagreeing `station` token).
+        if stationToken != nil && stationIdParam != nil {
+            return KdsStation.fromBackend(stationId).label
+        }
         if stationToken == nil && current.stationId == stationId { return current.stationLabel }
         if stationToken == nil && slot.isAll { return KdsStation.fromBackend(stationId).label }
         if slot.isAll, let stationToken, !stationToken.kdsIsBlank {
@@ -189,6 +197,15 @@ private extension String {
             .lowercased()
             .replacing("-", with: "_")
             .replacing(" ", with: "_")
+    }
+
+    /// Lowercased with every separator removed — `api_key`/`api-key`/`apikey`
+    /// all become `apikey`.
+    var separatorStripped: String {
+        lowercased()
+            .replacing("_", with: "")
+            .replacing("-", with: "")
+            .replacing(" ", with: "")
     }
 
     var formDecoded: String? {

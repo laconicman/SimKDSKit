@@ -35,7 +35,7 @@ public enum KdsAction: Sendable, Hashable {
         }
     }
 
-    public var occurredAt: Date? {
+    public var occurredAt: Date {
         switch self {
         case let .start(_, _, _, occurredAt),
              let .markReady(_, _, _, occurredAt),

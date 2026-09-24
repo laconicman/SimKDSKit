@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 
 public struct KdsBoard: Sendable, Hashable {
     public var new: [KdsTicket]
@@ -36,12 +36,31 @@ public enum KdsReducer {
     /// Merge a remote snapshot entry with local optimistic state: cancelled
     /// always wins, blocked wins over active, otherwise the most advanced
     /// status survives (a stale snapshot never rolls local progress back).
-    public static func mergeRemoteTicket(_ tickets: [KdsTicket], remoteTicket: KdsTicket) -> [KdsTicket] {
+    /// `now` stamps `readyAt` on a ticket the poll first reports as ready.
+    public static func mergeRemoteTicket(
+        _ tickets: [KdsTicket],
+        remoteTicket: KdsTicket,
+        at now: Date
+    ) -> [KdsTicket] {
         guard let existing = tickets.first(where: { $0.id == remoteTicket.id }) else {
-            return (tickets + [remoteTicket]).sorted { $0.visibleAt < $1.visibleAt }
+            var inserted = remoteTicket
+            if inserted.status == .ready, inserted.readyAt == nil {
+                inserted.readyAt = now // first seen ready = poll time
+            }
+            return (tickets + [inserted]).sorted { $0.visibleAt < $1.visibleAt }
         }
         var merged = remoteTicket
         merged.status = mergeStatus(local: existing.status, remote: remoteTicket.status)
+        if merged.status == existing.status {
+            // Local status survived a stale snapshot — keep the optimistic
+            // version bump too, or the next action's expectedVersion goes out
+            // stale and 409s.
+            merged.version = [existing.version, remoteTicket.version].compactMap { $0 }.max()
+                ?? remoteTicket.version
+        }
+        if merged.status == .ready {
+            merged.readyAt = existing.readyAt ?? now
+        }
         return tickets
             .map { $0.id == remoteTicket.id ? merged : $0 }
             .sorted { $0.visibleAt < $1.visibleAt }
@@ -66,6 +85,7 @@ private extension KdsTicket {
             guard status == .inProgress else { return self }
             var copy = self
             copy.status = .ready
+            copy.readyAt = action.occurredAt
             return copy.withOptimisticVersion(action)
         case .complete:
             guard status == .ready else { return self }
