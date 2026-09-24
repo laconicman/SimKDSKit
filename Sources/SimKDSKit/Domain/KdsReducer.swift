@@ -68,6 +68,9 @@ public enum KdsReducer {
 
     private static func mergeStatus(local: KdsTicketStatus, remote: KdsTicketStatus) -> KdsTicketStatus {
         if remote == .cancelled || local == .cancelled { return .cancelled }
+        // Completed is terminal: a stale blocked/active snapshot must not open
+        // the door back to the board (blocked would lose to a later ready).
+        if local == .completed { return .completed }
         if remote == .blocked || local == .blocked { return remote }
         return local.rank >= remote.rank ? local : remote
     }

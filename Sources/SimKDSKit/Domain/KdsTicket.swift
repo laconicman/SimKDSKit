@@ -38,8 +38,12 @@ public enum KdsFiscalState: String, Sendable, Hashable {
     case pending, accepted, succeeded, needsOperator
 }
 
+/// The spec's full six-value enum — line-level states stay distinct for the
+/// board (a stoplisted line reads differently from a cancelled one). Only
+/// `.available` is non-gating; ticket-level, anything else is the backend's
+/// whole-ticket verdict.
 public enum KdsAvailabilityState: String, Sendable, Hashable {
-    case available, unavailable
+    case available, unavailable, blocked, stoplisted, soldOut = "sold_out", cancelled
 }
 
 public struct KdsStation: Sendable, Hashable {
@@ -75,27 +79,29 @@ public struct KdsStation: Sendable, Hashable {
         }
     }
 
-    /// Strict path for the Generic contract: the wire carries canonical
-    /// `station_*` ids; anything malformed collapses to `.unknown` rather than
-    /// being rescued by the loose normalizer.
+    /// Strict path for the Generic contract: the wire id is an opaque nonempty
+    /// string — only blank collapses to `.unknown`. Known stations still map
+    /// to their canonical constants; custom ids keep their wire form and get
+    /// a humanized label.
     public static func fromBackendStationId(_ value: String?) -> KdsStation {
-        let stationId = (value?.trimmingCharacters(in: .whitespaces) ?? "").lowercased()
-        switch stationId {
+        let raw = value?.trimmingCharacters(in: .whitespaces) ?? ""
+        switch raw.lowercased() {
+        case "": return .unknown
         case Self.barHot.stationId: return .barHot
         case Self.barCold.stationId: return .barCold
         case Self.kitchen.stationId: return .kitchen
         case Self.unknown.stationId: return .unknown
         default:
-            guard stationId.isCanonicalStationId else { return .unknown }
-            return KdsStation(stationId: stationId, label: stationId.stationLabel)
+            return KdsStation(stationId: raw, label: raw.stationLabel)
         }
     }
 
+    /// The spec's contract: `stationId` is a nonempty string. Compare trimmed
+    /// and case-folded — no `station_` syntax is imposed on backend ids.
     public func matchesStationId(_ value: String) -> Bool {
-        guard let current = stationId.canonicalStationId, let expected = value.canonicalStationId else {
-            return false
-        }
-        return current == expected
+        let candidate = value.trimmingCharacters(in: .whitespaces)
+        return !stationId.isEmpty && !candidate.isEmpty
+            && stationId.lowercased() == candidate.lowercased()
     }
 }
 
@@ -215,21 +221,6 @@ private extension String {
 
     var strippingStationPrefix: String {
         hasPrefix("station_") ? String(dropFirst("station_".count)) : self
-    }
-
-    /// `^station_[a-z0-9]+(_[a-z0-9]+)*$` — hand-rolled because a shared
-    /// `Regex` value isn't `Sendable` and this check runs per ticket at most.
-    var isCanonicalStationId: Bool {
-        guard hasPrefix("station_") else { return false }
-        let segments = dropFirst("station_".count).split(separator: "_", omittingEmptySubsequences: false)
-        return !segments.isEmpty && segments.allSatisfy { segment in
-            !segment.isEmpty && segment.allSatisfy { $0 >= "a" && $0 <= "z" || $0 >= "0" && $0 <= "9" }
-        }
-    }
-
-    var canonicalStationId: String? {
-        let candidate = trimmingCharacters(in: .whitespaces).lowercased()
-        return candidate.isCanonicalStationId ? candidate : nil
     }
 
     var stationIdNormalized: String {

@@ -261,6 +261,38 @@ struct KdsReducerTests {
         #expect(merged.single().status == .new)
         #expect(Fixtures.displayNumbers(board.new) == ["A-42"])
     }
+
+    @Test func staleBlockedThenReadyNeverResurrectsCompletedTicket() {
+        // review r4099320282: completed → blocked → ready must not walk the
+        // ticket back onto the board.
+        let completed = Fixtures.ticket("A-42", status: .completed)
+        var blockedRemote = completed
+        blockedRemote.status = .blocked
+        let afterBlocked = KdsReducer.mergeRemoteTicket(
+            [completed], remoteTicket: blockedRemote, at: baseTime
+        )
+        #expect(afterBlocked.single().status == .completed)
+
+        var readyRemote = completed
+        readyRemote.status = .ready
+        let merged = KdsReducer.mergeRemoteTicket(
+            afterBlocked, remoteTicket: readyRemote, at: baseTime
+        )
+        #expect(merged.single().status == .completed)
+        #expect(KdsReducer.visibleBoard(merged).activeTickets.isEmpty)
+    }
+
+    @Test func stationMatchingFollowsTheWireContractNotASyntax() {
+        // review r4099320369: the spec requires a nonempty stationId — "bar-hot"
+        // is a legitimate backend id and must match itself.
+        var ticket = Fixtures.ticket("A-42", status: .new)
+        ticket.station = KdsStation.fromBackendStationId("bar-hot")
+        #expect(ticket.station.stationId == "bar-hot")
+        #expect(ticket.station.matchesStationId("bar-hot"))
+        #expect(ticket.station.matchesStationId(" bar-hot "))
+        #expect(!ticket.station.matchesStationId("bar-cold"))
+        #expect(!KdsStation.unknown.matchesStationId("bar-hot"))
+    }
 }
 
 private extension Array {
