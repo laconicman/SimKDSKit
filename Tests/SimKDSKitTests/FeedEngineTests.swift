@@ -443,6 +443,49 @@ struct FeedEngineTests {
         #expect(await status(engine, "A-42") == .inProgress) // untouched
     }
 
+    @Test("A failed action does not roll back a ticket a poll advanced meanwhile")
+    func rollbackYieldsToNewerRemote() async throws {
+        let gate = Gate()
+        var remote = seed("A-43")
+        remote.status = .ready
+        remote.version = 9
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            refreshResults: [.success([seed("A-42"), remote])],
+            actionResults: [.failure(.backendError(message: "backend timeout"))]
+        )
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setActionHook { await gate.wait() }
+        async let dispatching: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await api.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+
+        await engine.refresh() // reports A-43 ready v9 while the action is out
+        await gate.open()
+        await dispatching
+
+        // The failed start must not drag the ticket back to .new — the poll's
+        // truth is newer than the rejected optimism.
+        #expect(await status(engine, "A-43") == .ready)
+        #expect(await engine.state.tickets.first { $0.displayNumber == "A-43" }?.version == 9)
+        #expect(await engine.state.lastActionError != nil)
+    }
+
+    @Test("board() applies the persisted filters")
+    func boardAppliesFilters() async throws {
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+        await engine.start()
+        #expect(await engine.board().activeTickets.count == 2)
+
+        await engine.updateFilters(KdsBoardFilters(source: .online, stationId: nil))
+        #expect(await engine.board().activeTickets.isEmpty) // seeds are all .pos
+
+        await engine.updateFilters(KdsBoardFilters(source: .all, stationId: nil))
+        #expect(await engine.board().activeTickets.count == 2)
+    }
+
     @Test("Dispatches serialize through the backend call")
     func dispatchesSerialize() async throws {
         let gate = Gate()

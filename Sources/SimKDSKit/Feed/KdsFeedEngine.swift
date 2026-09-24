@@ -158,7 +158,7 @@ public actor KdsFeedEngine {
                 isFeedError: false,
                 requiresRefresh: error.requiresRefresh
             )
-            rollBack(dispatchAction, to: previousState)
+            rollBack(dispatchAction, to: previousState, optimistic: optimisticTickets)
             state.lastActionError = actionError
             persistAndPublish()
             if error.requiresRefresh {
@@ -170,12 +170,24 @@ public actor KdsFeedEngine {
     /// Roll back only the optimistic transition this action owns — anything a
     /// poll merged meanwhile (other tickets, refreshed fields on this one)
     /// survives. Wholesaler rollback to `previousState.tickets` would clobber
-    /// those intervening changes.
-    private func rollBack(_ action: KdsAction, to previousState: KdsFeedState) {
+    /// those intervening changes. If a poll touched this very ticket, its row
+    /// no longer matches the optimistic edit — the fresher remote truth wins
+    /// and nothing is restored.
+    private func rollBack(
+        _ action: KdsAction,
+        to previousState: KdsFeedState,
+        optimistic: [KdsTicket]
+    ) {
         guard let index = state.tickets.firstIndex(where: { $0.id == action.ticketId }),
-              let before = previousState.tickets.first(where: { $0.id == action.ticketId })
+              let before = previousState.tickets.first(where: { $0.id == action.ticketId }),
+              let produced = optimistic.first(where: { $0.id == action.ticketId })
         else { return } // a snapshot already owns this row — leave it alone
-        var restored = state.tickets[index]
+        let current = state.tickets[index]
+        guard current.status == produced.status,
+              current.version == produced.version,
+              current.readyAt == produced.readyAt
+        else { return } // a merge advanced this ticket while the call was out
+        var restored = current
         restored.status = before.status
         restored.version = before.version
         restored.readyAt = before.readyAt
@@ -228,9 +240,13 @@ public actor KdsFeedEngine {
         persistAndPublish()
     }
 
-    /// The board the views render (Kotlin `activeBoard()`).
+    /// The board the views render (Kotlin `activeBoard()`), with the persisted
+    /// board filters applied — callers can't forget `KdsOpsFilters` and
+    /// accidentally show every source.
     public func board() -> KdsBoard {
-        KdsReducer.visibleBoard(state.tickets)
+        KdsReducer.visibleBoard(
+            KdsOpsFilters.apply(state.tickets, filters: state.boardFilters)
+        )
     }
 
     // MARK: - Snapshot merge
