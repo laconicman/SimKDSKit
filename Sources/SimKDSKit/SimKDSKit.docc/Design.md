@@ -71,6 +71,25 @@ absence for oversight:
 One deliberate mapping fix: `delivery` source → `.online` (the Kotlin table left
 it `Unknown`; a delivery order is an online-channel ticket for board purposes).
 
+And two deliberate renames, same authority: the model carries spec field names
+(`displayNumber`, `visibleAt`), not the Kotlin ones (`number`, `createdAt`).
+`KdsAction` addresses tickets by `ticketId` only — the Generic wire always has
+one, so the Kotlin number-or-id fallback addressing went with it;
+`displayNumber` still rides on the action for operator-facing error text.
+
+## Build settings are load-bearing
+
+Two non-obvious manifest decisions, both forced by the generated code:
+
+- No `.defaultIsolation(MainActor.self)` — under it the generated `Sendable`
+  closures and synthesized `Decodable` conformances become actor-isolated and
+  the target does not compile. The app keeps its MainActor dialect; the package
+  stays in default isolation and its public types are `Sendable` value types.
+- `.enableUpcomingFeature("InternalImportsByDefault")` — the generator emits
+  `package import`, which collides with implicit `internal` imports in
+  hand-written files (SE-0409 ambiguity). With the feature on, files exposing
+  `Date`/`Duration` in public API write `public import Foundation`.
+
 ## Sources
 
 - Android reference: `../../SimKDS-main` (Forgejo export).

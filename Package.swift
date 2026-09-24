@@ -43,11 +43,14 @@ let package = Package(
                 .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
                 .product(name: "OSLogLoggingMiddleware", package: "OSLogLoggingMiddleware")
             ],
-            // No swiftSettings — deliberately. `.defaultIsolation(MainActor.self)`
-            // (the app/YDeliveryKit dialect) actor-isolates the *generated* client's
-            // properties and Decodable conformances and the target stops compiling;
-            // YandexDeliveryExpressAPI likewise carries none. Hand-written types state
-            // their own isolation instead.
+            // `defaultIsolation(MainActor.self)` (the app/YDeliveryKit dialect) is
+            // deliberately absent — it actor-isolates the *generated* client's
+            // properties and Decodable conformances. `InternalImportsByDefault` is
+            // present because the generated `package import` clashes with implicit
+            // `internal` imports in hand-written files (SE-0409 ambiguity).
+            swiftSettings: [
+                .enableUpcomingFeature("InternalImportsByDefault"),
+            ],
             // The generator is a *plugin*, never a `dependencies:` entry. It finds
             // `openapi.yaml` and `openapi-generator-config.yaml` by scanning the
             // target's sources, so those two must stay in the target's sources —
