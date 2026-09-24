@@ -1,0 +1,9 @@
+generate:
+  - types
+  - client
+# `package`, not `public`: the generated `Client`/`Components` stay inside this
+# module. The library's public surface is the hand-written domain + `KdsAPI`
+# facade, so the "generated types stop at the package boundary" rule is enforced
+# by the compiler, not by review. See the DocC `Design` article.
+accessModifier: package
+namingStrategy: idiomatic
