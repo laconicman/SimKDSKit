@@ -1,7 +1,7 @@
 # SimKDSKit
 
 The Swift foundation of [SimKDS](https://github.com/laconicman/SimKDS) — the iPad
-kitchen/bar display app, a port of the Android SimKDS (Generic KDS API v1).
+kitchen/bar display app (using Generic KDS API v1).
 
 What lives here, and the membership test for anything added: *code a KDS surface
 (app or future extension target) needs, which cannot import the app.*
@@ -34,6 +34,4 @@ swift test
 
 ## The spec
 
-`Sources/SimKDSKit/openapi.yaml` is a vendored copy of `docs/openapi.yaml` from
-the SimKDS repository (Generic KDS API v1). Fixes belong upstream first — see the
-`SpecOwnership` article before editing it.
+See the `SpecOwnership` article before editing it.
