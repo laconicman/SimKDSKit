@@ -22,8 +22,9 @@ Direction docs (authoritative): the DocC catalog —
 `Sources/SimKDSKit/SimKDSKit.docc/` (`Design`, `SpecOwnership`, `TechDebt`,
 `Roadmap`).
 
-Swift 6, iOS 17 floor, `MainActor` default isolation with `nonisolated` value
-types. Swift Testing throughout.
+Swift 6, iOS 17 floor, nonisolated by default — mutable state lives behind
+actors (`KdsFeedEngine`, the stores, `MockKdsAPI`); see `Design → Concurrency`.
+Swift Testing throughout.
 
 ## Build & test
 
