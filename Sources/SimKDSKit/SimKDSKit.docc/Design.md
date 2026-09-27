@@ -45,8 +45,10 @@ which would suffice:
    `YandexDeliveryExpressAPI` and `YooMoneyAPIClient` carry the same default.
 
 The safety model does not come from the flag anyway: all mutable state lives
-behind actors (``KdsFeedEngine``, the stores, ``MockKdsAPI``) and every shared
-type is `Sendable`. ``KdsAPI`` is deliberately a stateless `Sendable` seam —
+behind actors and every shared type is `Sendable` — ``MockKdsAPI`` and the
+stores are actors; ``KdsFeedEngine``, the last of them, lands with the feed
+PR (#4), and the policy is recorded here ahead of it. ``KdsAPI``
+is deliberately a stateless `Sendable` seam —
 calls are independent request/response pairs taking a `KdsContext` snapshot,
 so there is nothing for concurrent callers to collide on; ordering is the
 engine's dispatch chain, not the transport's. If a stateful client-level
