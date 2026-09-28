@@ -16,6 +16,12 @@ here the product is the domain + facade, and the generated code is plumbing.
 
 ## One client, rebuilt on settings change
 
+The domain types — ``KdsTicket``, ``KdsAction``, ``KdsStation``, their statuses
+— are the **canonical KDS model**; Generic KDS API v1 is its first wire binding,
+not its definition. A second backend is a second ``KdsAPI`` conformer that
+translates into that model; what that takes, and what v1 leaked above its
+layer, is planned in <doc:MultiBackend>.
+
 ``KdsAPIs/make(settings:credentials:mock:)`` composes a mock + live pair behind
 ``ModeSwitchingKdsAPI``; construction validates the URL's security (remote
 `http://` would carry credentials in cleartext — rejected as
