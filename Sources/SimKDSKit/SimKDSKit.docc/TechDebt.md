@@ -36,3 +36,35 @@ The feed refreshes on a 2 s timer while the scene is active, mirroring Android.
 **Cost:** latency and radio use a push channel would not pay.
 **Discharge:** SSE/WebSocket per the upstream `open-integration-roadmap.md`;
 the engine's snapshot merge already accepts out-of-band arrivals.
+
+## SK-4 — Station directory refetched on every poll
+
+`KdsFeedEngine.refreshSnapshot` calls `fetchStations` alongside every 2 s ticket
+poll — a faithful port of Android `refreshActiveSnapshot`
+(`FakeKdsRepository.kt:300-303`), kept so the first release matches the
+reference behaviour. Tracked as issue #6.
+
+**Cost:** one directory GET per poll, doubling request volume for data that
+changes when a station is added or deactivated — rarely.
+**Discharge:** fetch on `start()`, on backend-identity change in
+`updateSettings`, and on a slow cadence (every Nth poll or ~60 s); the engine
+already keeps `state.stationDirectory` as the fallback. Proposed upstream too
+(`Upstream/simkds-android-findings.md`, row 19).
+
+## SK-5 — Contract gaps the client cannot close alone
+
+Recall/undo, item-level fulfilment, the expediter gate, hold/release and a
+backend `priority` are standard on shipping KDS products and absent from Generic
+KDS API v1; three precision fixes to the v1 text (`ticketId` uniqueness,
+version bump on server-side merges, `Idempotency-Key` resolution) are owed as
+well. All written up with evidence in `Upstream/generic-kds-api-v1-proposals.md`;
+issue #9 is the tracking copy.
+
+**Cost:** an operator who mis-taps *Ready* has no way back; multi-station
+kitchens cannot be served correctly; a backend that merges content without
+bumping `version` produces spurious 409s.
+**Discharge:** upstream adopts the proposals (all non-breaking under the
+document's own rules) and the vendored `openapi.yaml` is re-vendored; the
+reducer then gains its first backward transition. Presentational items
+(all-day counts, sound, bump-bar keys) need no contract change and sit in
+<doc:Roadmap>.
