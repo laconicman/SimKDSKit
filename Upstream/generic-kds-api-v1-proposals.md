@@ -1,7 +1,7 @@
 # Generic KDS API v1: gaps against shipping KDS products, and three precision fixes
 
 **Upstream:** `docs/api.md` + `docs/openapi.yaml` in the SimKDS Android repo (vendored here
-verbatim as `Sources/SimKDSKit/openapi.yaml`, see <doc:SpecOwnership>).
+verbatim as `Sources/SimKDSKit/openapi.yaml`, see [SpecOwnership](../Sources/SimKDSKit/SimKDSKit.docc/SpecOwnership.md)).
 **Channel:** same owner — Forgejo issue or direct edit. Contract changes follow the
 document's own rule (`docs/api.md` → "Breaking и non-breaking changes"): optional fields and
 new optional actions are non-breaking; everything else is a new namespace.
@@ -40,28 +40,43 @@ control at all and polls every 10 s. Keep that.
 
 | Behaviour | Prevalence | v1 today | Proposal | Breaking? |
 | --- | --- | --- | --- | --- |
-| **Recall / undo bump** — `ready → in_progress` (or `completed → ready`) after a mis-tap | Universal (Square, Toast, Fresh, Lightspeed; the open-source KDS has a `Recall` button) | Actions are forward-only: `start`, `mark_ready`, `complete` (`openapi.yaml:578-581`) | New optional action `recall` with `expectedVersion`; backend clears `readyAt`-equivalent. Client-side the reducer needs one backward transition | No (new optional action) |
-| **Item-level fulfilment** — tick off lines; ticket auto-`ready` when all lines are | Common (Fresh, Toast Prep, Square) | Ticket-level only; `items[].availabilityState` is the only per-line state | Optional `items[].fulfillmentState: pending \| fulfilled` in the feed, plus optional action `fulfill_line { lineId }`. Backend may auto-promote to `ready` | No (optional field + optional action) |
+| **Recall / undo bump** — `ready → in_progress` (or `completed → ready`) after a mis-tap | Universal (Square, Toast, Fresh, Lightspeed; the open-source KDS has a `Recall` button) | Actions are forward-only: `start`, `mark_ready`, `complete` (`openapi.yaml:578-581`) | New optional action `recall` with `expectedVersion`; backend clears `readyAt`-equivalent. Client-side the reducer needs one backward transition | **Enum rollout** — `recall` extends closed `TicketAction`, echoed back as `acceptedAction`; see the note below |
+| **Item-level fulfilment** — tick off lines; ticket auto-`ready` when all lines are | Common (Fresh, Toast Prep, Square) | Ticket-level only; `items[].availabilityState` is the only per-line state | Optional `items[].fulfillmentState: pending \| fulfilled` in the feed, plus optional action `fulfill_line { lineId }`. Backend may auto-promote to `ready` | Field: no. Action: **enum rollout**, as for `recall` |
 | **Expediter / expo gate** — an expo ticket cannot be bumped while prep stations are still working | Common in multi-station kitchens | Nothing; upstream roadmap 3 (multi-station) is adjacent | Server-side rejection: `409` with a new `error.code = blocked_by_prep` listing the stations. Fits the existing error envelope | **Not until `ErrorCode` is open.** See the rollout note below the table |
 | **Hold / release** for scheduled pickup or future orders | Common (Fresh "Order Hold and Release", Toast `HOLD`) | `blocked` is the nearest state but means "backend intervention", not "not yet" | Optional `metadata.onHold: bool` + `metadata.releaseAt: datetime`; the client renders a held lane and does not start SLA timers | No |
 | **Backend priority / urgent flag** | Common (`priority`, `isUrgent`) | Sorting is by `visibleAt` only | Optional `priority: integer` on the ticket; higher first, ties by `visibleAt` | No |
 | **Push channel** | Common | Polling (SK-3) | Upstream roadmap 1 already | — |
 
-**Rollout note for any new `error.code`.** `ErrorCode` is a *closed* enum in
-`openapi.yaml` (`:584-593`), and the document's own breaking list forbids "изменение
-значения enum без сохранения backward-compatible alias". A strict generated client that
-receives an unlisted code fails to decode the error body: the Swift client recovers the
-`409` from the status alone but loses the message (`KdsAPI.swift:153-158` →
-`.conflict(code: .unknown, message: nil)`); the Kotlin client parses the body as loose JSON
-and keeps the message (`RealKdsHttpApiClient.kt:453-456`). So a backend that emits
-`blocked_by_prep` before clients update degrades the iOS operator message to nothing. The
-order is therefore: (1) contract — declare `error.code` an open string with the known values
-documented, or add the value *and* state that clients MUST treat unknown codes as opaque
-non-refresh conflicts; (2) clients ship tolerance (Swift: decode the envelope with an open
-code so the message survives; Kotlin already does); (3) backends emit. Step 1 is the
-non-breaking one; step 3 before step 2 is not.
+**Rollout note for every closed enum — `ErrorCode`, `TicketAction`, and any new one.**
+The document's own breaking list forbids "изменение значения enum без сохранения
+backward-compatible alias", and three enums in `openapi.yaml` are closed: `ErrorCode`
+(`:584-593`), `TicketAction` (`:576-581`), `KitchenState` (`:558-566`). A strict generated client that
+receives an unlisted value fails to decode the *whole body*:
 
-Presentational — needs **no** contract change, goes to <doc:Roadmap> for the iPad app:
+- **`ErrorCode`** — the Swift client recovers the `409` from the status alone but loses the
+  message (`KdsAPI.swift:153-158` → `.conflict(code: .unknown, message: nil)`); the Kotlin
+  client parses the body as loose JSON and keeps it (`RealKdsHttpApiClient.kt:453-456`). A
+  backend emitting `blocked_by_prep` early degrades the iOS operator message to nothing.
+- **`TicketAction`** — it is a *request* value, but the success body echoes it as
+  `acceptedAction` (`:520`). An old client never *sends* `recall`, yet a newer tablet on the
+  same station does; the old client polls, and the ticket row decodes fine — but if a
+  backend ever echoes an action in a shared payload the old client cannot decode it. And a
+  new client sending `recall` to an old backend gets `422 validation_error`, which the
+  operator reads as a mistake.
+- **New enums** (`fulfillmentState`) arrive with their field, so they are safe *until* a
+  value is added later — the same rule applies from then on.
+
+The order, for any of them: (1) **contract** — declare the enum open (`type: string` with
+the known values listed in prose, or `x-known-values`), and state that clients MUST treat
+unknown values as opaque (unknown `error.code` = non-refresh conflict; unknown
+`acceptedAction` = ignore; unknown `kitchenState` = hide the ticket, fail-closed); for new
+*request* actions add **capability discovery** — an optional `supportedActions: [string]`
+on the `Station` entry, so a client offers *Recall* only where the backend accepts it;
+(2) **clients** ship tolerance and discovery; (3) **backends** emit. Step 1 is the
+non-breaking one; step 3 before step 2 is not — which is why the table above stopped
+calling the new actions "non-breaking".
+
+Presentational — needs **no** contract change, goes to [Roadmap](../Sources/SimKDSKit/SimKDSKit.docc/Roadmap.md) for the iPad app:
 all-day / production counts (aggregate `items` across visible tickets), sound on new ticket,
 bump-bar via external keyboard shortcuts, colour-coded wait thresholds (already
 `KdsWaitClassifier`).
@@ -108,8 +123,8 @@ bump-bar via external keyboard shortcuts, colour-coded wait thresholds (already
 > - [ ] Пример `Idempotency-Key` в `docs/api.md:58` показывает секундное разрешение; заменить примером с правилом: уникален для каждой попытки, retry той же попытки использует тот же ключ, включать миллисекунды или nonce.
 >
 > **Расширения (все — optional, non-breaking по правилам самого документа)**
-> - [ ] Action `recall` (`ready → in_progress`) с `expectedVersion` — есть у всех KDS на рынке, у нас actions только вперёд.
-> - [ ] `items[].fulfillmentState` + action `fulfill_line { lineId }` — построчная готовность с авто-переводом тикета в `ready`.
+> - [ ] Action `recall` (`ready → in_progress`) с `expectedVersion` — есть у всех KDS на рынке, у нас actions только вперёд. `TicketAction` — закрытый enum и возвращается как `acceptedAction`; тот же порядок внедрения, что для `ErrorCode`, плюс `supportedActions` в `Station`, чтобы клиент предлагал *Recall* только там, где backend его принимает.
+> - [ ] `items[].fulfillmentState` + action `fulfill_line { lineId }` — построчная готовность с авто-переводом тикета в `ready`. Поле — non-breaking; action — тот же порядок внедрения, что для `recall`.
 > - [ ] `409 error.code = blocked_by_prep` — expo-станция не может закрыть тикет, пока prep-станции работают (связано с roadmap 3, multi-station). **Порядок внедрения обязателен:** `ErrorCode` сейчас закрытый enum; сначала объявить `error.code` открытой строкой (или зафиксировать «неизвестный код = непрозрачный конфликт без refresh»), затем клиенты, затем backend. Kotlin-клиент уже терпим к неизвестным кодам (`RealKdsHttpApiClient.kt:453-456`); Swift теряет текст сообщения.
 > - [ ] `metadata.onHold` / `metadata.releaseAt` — hold/release для отложенных заказов; `blocked` для этого не подходит семантически.
 > - [ ] `priority: integer` — приоритет от backend; сейчас сортировка только по `visibleAt`.

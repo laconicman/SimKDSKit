@@ -62,9 +62,14 @@ issue #9 is the tracking copy.
 
 **Cost:** an operator who mis-taps *Ready* has no way back; multi-station
 kitchens cannot be served correctly; a backend that merges content without
-bumping `version` produces spurious 409s.
-**Discharge:** upstream adopts the proposals (all non-breaking under the
-document's own rules) and the vendored `openapi.yaml` is re-vendored; the
-reducer then gains its first backward transition. Presentational items
+bumping `version` lets the next action be accepted against content the
+operator has not seen — the optimistic-concurrency guard silently off for
+that ticket.
+**Discharge:** upstream adopts the proposals — the optional fields are
+non-breaking as written; the new actions and error code need the enum
+rollout order the note records (open the enums or add capability
+discovery first, then clients, then backends) — and the vendored
+`openapi.yaml` is re-vendored; the reducer then gains its first backward
+transition. Presentational items
 (all-day counts, sound, bump-bar keys) need no contract change and sit in
 <doc:Roadmap>.
