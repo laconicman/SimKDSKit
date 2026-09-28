@@ -87,6 +87,9 @@ public actor MockKdsAPI: KdsAPI {
     /// An accepted action mutates the mock's feed, same as a live backend —
     /// the next fetch reports the new status. The transition is the domain's
     /// own `reduce`, so optimistic and confirmed semantics can never drift.
+    /// Like the live endpoint, the action is scoped to the request's station:
+    /// another station's ticket answers `409 station_mismatch`, an unknown
+    /// one `404` (spec → Error model).
     public func applyTicketAction(_ action: KdsAction, context: KdsContext) async throws(KdsAPIError) {
         sentActions.append(action)
         if let message = nextFailureMessage {
@@ -94,6 +97,15 @@ public actor MockKdsAPI: KdsAPI {
             throw KdsAPIError.backendError(message: message)
         }
         try onAction?(action)
+        guard let ticket = tickets.first(where: { $0.id == action.ticketId }) else {
+            throw KdsAPIError.notFound(message: "Ticket \(action.ticketId) is not visible to this client")
+        }
+        guard ticket.station.matchesStationId(context.stationId) else {
+            throw KdsAPIError.conflict(
+                code: .stationMismatch,
+                message: "Ticket \(action.ticketId) belongs to \(ticket.station.stationId), not \(context.stationId)"
+            )
+        }
         tickets = KdsReducer.reduce(tickets, action)
     }
 

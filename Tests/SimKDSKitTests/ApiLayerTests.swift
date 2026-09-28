@@ -630,6 +630,35 @@ struct MockKdsAPITests {
         #expect(await mock.fetchCount == 1)
     }
 
+    @Test("An action on another station's ticket is a station_mismatch conflict, like the live endpoint")
+    func crossStationActionConflicts() async throws {
+        let now = Date(timeIntervalSince1970: 1_783_200_000)
+        let mock = MockKdsAPI(now: now)
+        // Shared fixture context is station_bar_hot; ticket-hidden is seeded on the kitchen.
+        let action = KdsAction.start(ticketId: "ticket-hidden", displayNumber: "M-12", expectedVersion: nil, occurredAt: now)
+
+        let expected = KdsAPIError.conflict(
+            code: .stationMismatch,
+            message: "Ticket ticket-hidden belongs to station_kitchen, not station_bar_hot"
+        )
+        await #expect(throws: expected) {
+            try await mock.applyTicketAction(action, context: context)
+        }
+        #expect(expected.requiresRefresh) // station_mismatch is a refresh-conflict per the spec
+
+        // The kitchen ticket was not touched.
+        var kitchen = context
+        kitchen.stationId = "station_kitchen"
+        let feed = try await mock.refresh(context: kitchen)
+        #expect(feed.first { $0.id == "ticket-hidden" }?.status == .new)
+
+        // An unknown ticket is 404, not a silent success.
+        let ghost = KdsAction.start(ticketId: "ticket-nope", displayNumber: "X-1", expectedVersion: nil, occurredAt: now)
+        await #expect(throws: KdsAPIError.notFound(message: "Ticket ticket-nope is not visible to this client")) {
+            try await mock.applyTicketAction(ghost, context: context)
+        }
+    }
+
     @Test("Refresh keeps an existing scripted ticket's visibleAt — the wait baseline")
     func refreshPreservesVisibleAt() async throws {
         let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
@@ -711,8 +740,8 @@ struct MockKdsAPITests {
     @Test("failNextAction fires once then clears")
     func failNext() async throws {
         let mock = MockKdsAPI(now: Date())
-        let action = KdsAction.start(
-            ticketId: "t-1", displayNumber: "A-1", expectedVersion: nil, occurredAt: Date()
+        let action = KdsAction.start( // A-43 is seeded .new on the fixture's station
+            ticketId: "ticket-a43", displayNumber: "A-43", expectedVersion: nil, occurredAt: Date()
         )
         await mock.failNextAction("boom")
         do {
