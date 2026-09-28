@@ -36,7 +36,9 @@ do not re-derive it. The Android reference implementation being ported lives at
    collapse them. Error types conform to `LocalizedError` with a filled
    `errorDescription`.
 7. **Swift Testing, not XCTest.** `#expect` by default, `#require` when later
-   lines depend on the value, tags for selection.
+   lines depend on the value, tags for selection (`Tests/SimKDSKitTests/Tags.swift`:
+   `.regression`, `.concurrency`, `.specContract`, `.mock`, `.live`). A test that
+   closes a review finding carries `.regression`.
 8. **Secrets never enter `KdsDeviceSettings`.** The token lives in
    `CredentialStore` (Keychain); settings carry only plain fields.
 9. **Source-breaking changes bump the minor while `0.x`, stated in the PR

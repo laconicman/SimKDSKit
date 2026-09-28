@@ -32,7 +32,7 @@ private extension HTTPRequest {
 
 // MARK: - Auth middleware
 
-@Suite("Auth middleware")
+@Suite("Auth middleware", .tags(.specContract))
 struct AuthMiddlewareTests {
     @Test("Bearer credential sets Authorization")
     func bearer() async throws {
@@ -91,7 +91,7 @@ struct AuthMiddlewareTests {
 
 // MARK: - Context headers and request shape
 
-@Suite("Request headers")
+@Suite("Request headers", .tags(.specContract))
 struct RequestHeaderTests {
     @Test("Stations: locationId query plus context headers")
     func stations() async throws {
@@ -209,7 +209,7 @@ struct RequestHeaderTests {
 
 // MARK: - Status → error mapping
 
-@Suite("Status mapping")
+@Suite("Status mapping", .tags(.specContract))
 struct StatusMappingTests {
     private func actionApi(status: HTTPResponse.Status, json: String = "") -> any KdsAPI {
         api(StubTransport(status: status, json: json))
@@ -605,7 +605,7 @@ struct MappingTests {
 
 // MARK: - Mock backend
 
-@Suite("Mock backend")
+@Suite("Mock backend", .tags(.mock))
 struct MockKdsAPITests {
     @Test("Seeds and refresh serve only the context's station, like the live endpoint")
     func stationScopedFeed() async throws {

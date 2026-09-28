@@ -6,7 +6,7 @@ import Testing
 /// scaffold's whole claim. Behavioural coverage arrives with the domain and
 /// API layers; these guard only that the vendored contract generated the
 /// shapes the mapper will rely on.
-@Suite("Generated surface")
+@Suite("Generated surface", .tags(.specContract))
 struct GeneratedSurfaceTests {
     @Test func decodesActiveTicketsFixture() throws {
         let url = try #require(Bundle.module.url(forResource: "active-tickets", withExtension: "json"))
