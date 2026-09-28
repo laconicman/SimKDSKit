@@ -49,7 +49,7 @@ changes when a station is added or deactivated — rarely.
 **Discharge:** fetch on `start()`, on backend-identity change in
 `updateSettings`, and on a slow cadence (every Nth poll or ~60 s); the engine
 already keeps `state.stationDirectory` as the fallback. Proposed upstream too
-(`Upstream/simkds-android-findings.md`, row 19).
+(`Upstream/simkds-android-findings.md`, row 20).
 
 ## SK-5 — Contract gaps the client cannot close alone
 
