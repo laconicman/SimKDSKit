@@ -22,9 +22,13 @@ diff-level cues and the noise filters.
 - Flag a `// TODO` in Swift code that carries no `SK-n` register number.
 - Require public API to be hand-written domain/facade types; a `public` on a
   declaration that re-exports a generated symbol is a boundary violation.
-- Require `nonisolated` on pure value types and their extensions (extensions do
-  not inherit it under MainActor default isolation — YDeliveryKit rule 4, same
-  hazard).
+- Do **not** require `nonisolated` on value types or extensions: this package is
+  nonisolated by default (`.defaultIsolation(nil)` in the manifest), so the
+  marker is a no-op annotation here — `Design → Concurrency` records why.
+  Conversely, flag a `defaultIsolation(MainActor)` swiftSetting (or a
+  `SWIFT_DEFAULT_ACTOR_ISOLATION` build setting) added to any target that
+  contains generated code as a regression: it breaks generated conformances —
+  upstream apple/swift-openapi-generator#796 and #823.
 
 ## Anti-patterns to Flag
 

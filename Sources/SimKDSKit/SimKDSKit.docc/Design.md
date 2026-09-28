@@ -26,6 +26,44 @@ headers (`X-SimKDS-*`, `Idempotency-Key`, `X-Request-Id`) are generated
 operation parameters; only auth goes through middleware, placed innermost so
 caller-supplied logging middlewares never see the credential header.
 
+## Concurrency: the package is nonisolated by default
+
+`Package.swift` spells it — `.defaultIsolation(nil)`. Two reasons, either of
+which would suffice:
+
+1. **Generated code cannot live under `-default-isolation MainActor`.** The
+   emitted `Decodable`/`CaseIterable`/`Sendable` conformances and `@Sendable`
+   closures become MainActor-isolated and fail their protocol requirements —
+   upstream `apple/swift-openapi-generator` issues #796 and #823, whose
+   maintainer-sanctioned workaround is exactly "turn that off in that module."
+   Rule 4 bans editing generated code, so the target setting is the only knob.
+2. **A data-layer library must not impose an executor on its callers.** The
+   approachable-concurrency dialect (MainActor default) is for app targets,
+   whose code mostly touches views. Every call into this package — reducer,
+   mapping, filters — is pure work that should run on the caller's context;
+   making it hop to main and back would be contention bought for nothing.
+   `YandexDeliveryExpressAPI` and `YooMoneyAPIClient` carry the same default.
+
+The safety model does not come from the flag anyway: every shared type is
+`Sendable`, and mutable state sits behind an isolation boundary of its own —
+``MockKdsAPI`` is an actor on `main` today; the feed PR (#4) adds
+``KdsFeedEngine`` (an actor) and the settings stores (final classes over
+lock-guarded or `UserDefaults`-backed storage, `@unchecked Sendable` with the
+reasoning at the declaration). The policy is recorded here ahead of them.
+``KdsAPI`` is deliberately a stateless `Sendable` seam —
+calls are independent request/response pairs taking a `KdsContext` snapshot,
+so there is nothing for concurrent callers to collide on; ordering is the
+engine's dispatch chain, not the transport's. If a stateful client-level
+concern ever appears (token refresh, circuit breaking), *that* state gets its
+own actor — not the whole client.
+
+Corollaries: `nonisolated` markers on value types are no-ops here — don't write
+them. The app target gets the opposite dialect (MainActor default + the
+SE-0461/0470 upcoming features, the YDelivery precedent). If a UI-adjacent
+target with MainActor default is ever added to this package, *its* pure value
+types state `nonisolated` — that is where the rule applies — and generated code
+then moves to a dedicated nonisolated target (the upstream-endorsed layout).
+
 ## Strict decoding
 
 The generated `Codable` conformances throw on out-of-spec enum values and

@@ -22,9 +22,15 @@ do not re-derive it. The Android reference implementation being ported lives at
    `SpecOwnership`.
 4. **Never edit generated code, and never commit it.** The build plugin
    regenerates `Client.swift`/`Types.swift` into the build directory.
-5. **Pure value types and their extensions are `nonisolated`** — extensions do
-   not inherit it under this package's MainActor default isolation. State it
-   every time.
+5. **The package is `nonisolated` by default — deliberately** (`.defaultIsolation(nil)`
+   in the manifest; see `Design → Concurrency`). Generated code cannot compile
+   under `-default-isolation MainActor`, and a data-layer library must not
+   impose an executor on callers. `nonisolated` markers on value types are
+   no-ops here — do not add them. Mutable state lives behind actors
+   (`KdsFeedEngine`, stores, `MockKdsAPI`); `KdsAPI` stays a stateless
+   `Sendable` seam. If a target with `MainActor` default is ever added,
+   *that* target's pure value types state `nonisolated` every time — that is
+   where the YDeliveryKit rule this replaces actually applies.
 6. **Errors are two channels.** Documented non-2xx statuses are `KdsAPIError`
    cases you `switch` on; transport and decoding failures are thrown. Do not
    collapse them. Error types conform to `LocalizedError` with a filled

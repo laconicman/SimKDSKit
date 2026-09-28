@@ -5,9 +5,12 @@
 // REVIEW.md: code a KDS surface (app or extension) needs, which cannot import
 // the app.
 //
-// The Swift settings mirror the app target (project.yml): same language mode,
-// MainActor default isolation, and the Approachable Concurrency features the app
-// compiles with — one concurrency dialect across app and package.
+// Concurrency dialect: this package is nonisolated by default — deliberately,
+// not by omission. A data-layer library must not impose an executor on its
+// callers, and generated OpenAPI code cannot compile under -default-isolation
+// MainActor (upstream apple/swift-openapi-generator#796). The app target gets
+// the opposite dialect (MainActor default + approachable concurrency) — see
+// Design → Concurrency.
 import PackageDescription
 
 let package = Package(
@@ -43,12 +46,18 @@ let package = Package(
                 .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
                 .product(name: "OSLogLoggingMiddleware", package: "OSLogLoggingMiddleware")
             ],
-            // `defaultIsolation(MainActor.self)` (the app/YDeliveryKit dialect) is
-            // deliberately absent — it actor-isolates the *generated* client's
-            // properties and Decodable conformances. `InternalImportsByDefault` is
-            // present because the generated `package import` clashes with implicit
-            // `internal` imports in hand-written files (SE-0409 ambiguity).
+            // `.defaultIsolation(nil)` spells the policy explicitly: nonisolated
+            // module default. `.defaultIsolation(MainActor.self)` (the app dialect)
+            // would actor-isolate the *generated* client's conformances and
+            // Sendable closures into uncompilability — upstream
+            // apple/swift-openapi-generator#796/#823. YandexDeliveryExpressAPI and
+            // YooMoneyAPIClient carry the same nonisolated default. Design →
+            // Concurrency records the reasoning; REVIEW.md flags re-adding it.
+            // `InternalImportsByDefault` is present because the generated
+            // `package import` clashes with implicit `internal` imports in
+            // hand-written files (SE-0409 ambiguity).
             swiftSettings: [
+                .defaultIsolation(nil),
                 .enableUpcomingFeature("InternalImportsByDefault"),
             ],
             // The generator is a *plugin*, never a `dependencies:` entry. It finds
