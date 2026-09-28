@@ -687,6 +687,32 @@ struct FeedEngineTests {
         #expect(await engine.state.lastSyncedAt == base) // the old action's completion stamped nothing
     }
 
+    @Test("A settings edit that keeps the board (device label) does not strand a failed action")
+    func boardPreservingEditKeepsFailureHandling() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            actionResults: [.failure(.backendError(message: "backend timeout"))]
+        )
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setActionHook { await gate.wait() }
+        async let dispatching: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await api.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+
+        var settings = await engine.state.deviceSettings
+        settings.deviceName = "Bar tablet (renamed)" // same backend, same station
+        await engine.updateSettings(settings)
+        await gate.open()
+        await dispatching
+
+        // The ticket is still on this board, so its failure must land here:
+        // rolled back to the server's truth, and reported to the operator.
+        #expect(await status(engine, "A-43") == .new)
+        #expect(await engine.state.lastActionError?.ticketNumber == "A-43")
+    }
+
     @Test("A successful action whose settings changed mid-flight stamps nothing on the new board")
     func settingsChangeMidDispatchDiscardsSuccess() async throws {
         let gate = Gate()
