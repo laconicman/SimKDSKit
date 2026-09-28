@@ -18,6 +18,11 @@ public actor KdsFeedEngine {
     /// `occurredAt` per pending real-mode action — retries of a failed action
     /// reuse the first stamp so the backend sees one idempotency key.
     private var pendingActionOccurredAt: [String: Date] = [:]
+    /// The newest backend truth per ticket id, as last reported by fetch or
+    /// poll. Rollback consults it: a board row is merged local+remote, so the
+    /// remote half must be kept separately to know whether a failed action's
+    /// optimism still stands against what the backend actually reported.
+    private var lastRemote: [String: KdsTicket] = [:]
     private var continuations: [UUID: AsyncStream<KdsFeedState>.Continuation] = [:]
     /// Kotlin's `synchronized(dispatchLock)`: action lifecycles serialize so a
     /// slow backend call can't interleave with a second tap's optimistic edit.
@@ -88,6 +93,7 @@ public actor KdsFeedEngine {
                 }
                 return ticket
             }
+            lastRemote = Dictionary(uniqueKeysWithValues: tickets.map { ($0.id, $0) })
             state.connectionState = .connected
             state.lastSyncedAt = now
             state.stationDirectory = directory
@@ -135,6 +141,7 @@ public actor KdsFeedEngine {
 
         state.tickets = optimisticTickets
         state.lastActionError = nil
+        let remoteAtDispatch = lastRemote[dispatchAction.ticketId]
         persistAndPublish()
 
         do {
@@ -158,7 +165,12 @@ public actor KdsFeedEngine {
                 isFeedError: false,
                 requiresRefresh: error.requiresRefresh
             )
-            rollBack(dispatchAction, to: previousState, optimistic: optimisticTickets)
+            rollBack(
+                dispatchAction,
+                to: previousState,
+                optimistic: optimisticTickets,
+                remoteAtDispatch: remoteAtDispatch
+            )
             state.lastActionError = actionError
             persistAndPublish()
             if error.requiresRefresh {
@@ -167,26 +179,44 @@ public actor KdsFeedEngine {
         }
     }
 
-    /// Roll back only the optimistic transition this action owns — anything a
-    /// poll merged meanwhile (other tickets, refreshed fields on this one)
-    /// survives. Wholesaler rollback to `previousState.tickets` would clobber
-    /// those intervening changes. If a poll touched this very ticket, its row
-    /// no longer matches the optimistic edit — the fresher remote truth wins
-    /// and nothing is restored.
+    /// Roll back only the optimistic transition this action owns, using the
+    /// newest remote truth — anything a poll merged meanwhile (other tickets,
+    /// refreshed fields on this one) survives. Wholesaler rollback to
+    /// `previousState.tickets` would clobber those intervening changes.
+    ///
+    /// Three cases, in precedence order:
+    /// - A merge changed the row's status while the call was out — the remote
+    ///   won; the row is already truer than our rejected optimism.
+    /// - A poll delivered new remote truth for this ticket (`lastRemote`
+    ///   moved) without reaching the optimistic status — restore that truth;
+    ///   a mere version bump still counts as "behind" and must roll back.
+    ///   If the remote independently reached the optimistic status, the
+    ///   failed call is moot — keep the row.
+    /// - No newer remote word — revert only this action's optimistic fields.
     private func rollBack(
         _ action: KdsAction,
         to previousState: KdsFeedState,
-        optimistic: [KdsTicket]
+        optimistic: [KdsTicket],
+        remoteAtDispatch: KdsTicket?
     ) {
         guard let index = state.tickets.firstIndex(where: { $0.id == action.ticketId }),
-              let before = previousState.tickets.first(where: { $0.id == action.ticketId }),
               let produced = optimistic.first(where: { $0.id == action.ticketId })
-        else { return } // a snapshot already owns this row — leave it alone
+        else { return }
         let current = state.tickets[index]
-        guard current.status == produced.status,
-              current.version == produced.version,
-              current.readyAt == produced.readyAt
-        else { return } // a merge advanced this ticket while the call was out
+        guard current.status == produced.status
+        else { return } // a merge decided this row — remote won
+
+        if let remote = lastRemote[action.ticketId], remote != remoteAtDispatch {
+            // The backend spoke about this ticket while the call was out.
+            if remote.status == produced.status {
+                return // it reached the goal independently — failure is moot
+            }
+            state.tickets[index] = remote // freshest server truth wins
+            return
+        }
+
+        guard let before = previousState.tickets.first(where: { $0.id == action.ticketId })
+        else { return }
         var restored = current
         restored.status = before.status
         restored.version = before.version
@@ -224,6 +254,7 @@ public actor KdsFeedEngine {
         if backendChanged {
             state.tickets = []
             pendingActionOccurredAt.removeAll()
+            lastRemote.removeAll()
             state.boardFilters.stationId = settings.stationId
         } else {
             if previous.stationId != settings.stationId {
@@ -271,6 +302,7 @@ public actor KdsFeedEngine {
             // A settings change or a newer fetch landed while this was in
             // flight — publishing now would merge the old backend's board.
             guard config == configVersion, mine == fetchTicket else { return }
+            for remote in refreshed { lastRemote[remote.id] = remote }
             state.tickets = Self.replacedSnapshot(
                 current: state.tickets,
                 refreshed: refreshed,

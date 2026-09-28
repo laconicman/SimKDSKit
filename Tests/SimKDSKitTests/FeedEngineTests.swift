@@ -472,6 +472,64 @@ struct FeedEngineTests {
         #expect(await engine.state.lastActionError != nil)
     }
 
+    @Test("A poll that bumps only the version still counts as remote truth — the failed action rolls back to it")
+    func rollbackRestoresStaleRemoteTruth() async throws {
+        let gate = Gate()
+        var remote = seed("A-43")
+        remote.version = 5 // same .new status — a version bump, not advancement
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            refreshResults: [.success([seed("A-42"), remote])],
+            actionResults: [.failure(.backendError(message: "backend timeout"))]
+        )
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setActionHook { await gate.wait() }
+        async let dispatching: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await api.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+
+        await engine.refresh()
+        await gate.open()
+        await dispatching
+
+        // Merge kept local .inProgress but adopted version 5; the rollback
+        // must restore the remote's .new — version drift is not status
+        // advancement, and the rejected optimism must not survive.
+        let ticket = await engine.state.tickets.first { $0.displayNumber == "A-43" }
+        #expect(ticket?.status == .new)
+        #expect(ticket?.version == 5)
+    }
+
+    @Test("A failed action is moot when the remote independently reached the goal")
+    func rollbackMootWhenRemoteConfirms() async throws {
+        let gate = Gate()
+        var remote = seed("A-43")
+        remote.status = .inProgress // another tablet/backend path started it
+        remote.version = 5
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            refreshResults: [.success([seed("A-42"), remote])],
+            actionResults: [.failure(.backendError(message: "backend timeout"))]
+        )
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setActionHook { await gate.wait() }
+        async let dispatching: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await api.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+
+        await engine.refresh()
+        await gate.open()
+        await dispatching
+
+        // The remote independently reached .inProgress — the board already
+        // shows what the rejected action wanted; nothing rolls back.
+        let ticket = await engine.state.tickets.first { $0.displayNumber == "A-43" }
+        #expect(ticket?.status == .inProgress)
+        #expect(ticket?.version == 5)
+    }
+
     @Test("board() applies the persisted filters")
     func boardAppliesFilters() async throws {
         let api = ScriptedKdsAPI(tickets: seeds())
