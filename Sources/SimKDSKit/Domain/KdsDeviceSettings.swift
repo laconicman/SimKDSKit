@@ -1,6 +1,6 @@
 import Foundation
 
-public enum KdsBackendMode: String, Sendable, Hashable, CaseIterable {
+public enum KdsBackendMode: String, Sendable, Hashable, CaseIterable, Codable {
     case mock
     case real
 }
@@ -8,7 +8,7 @@ public enum KdsBackendMode: String, Sendable, Hashable, CaseIterable {
 /// Non-secret device/backend settings. Credentials are deliberately absent —
 /// they live in the Keychain behind `CredentialStore` (delta 2), so this struct
 /// is safe to persist in UserDefaults and to show whole in diagnostics.
-public struct KdsDeviceSettings: Sendable, Hashable {
+public struct KdsDeviceSettings: Sendable, Hashable, Codable {
     public var apiBaseUrl: String
     public var locationId: String
     public var stationId: String

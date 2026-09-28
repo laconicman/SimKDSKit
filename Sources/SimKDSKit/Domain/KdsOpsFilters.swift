@@ -1,6 +1,6 @@
 import Foundation
 
-public enum KdsSourceFilter: String, Sendable, Hashable, CaseIterable {
+public enum KdsSourceFilter: String, Sendable, Hashable, CaseIterable, Codable {
     case all
     case pos
     case online
@@ -16,7 +16,7 @@ public enum KdsSourceFilter: String, Sendable, Hashable, CaseIterable {
 
 /// Station filtering keys on `stationId` directly — the Android
 /// `KdsStationFilter` enum is deleted (directory supplies labels; delta 4).
-public struct KdsBoardFilters: Sendable, Hashable {
+public struct KdsBoardFilters: Sendable, Hashable, Codable {
     public var source: KdsSourceFilter
     public var stationId: String?
 

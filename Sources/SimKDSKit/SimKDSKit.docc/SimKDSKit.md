@@ -14,7 +14,8 @@ Three layers:
 
 - **Domain** — tickets, board bucketing, optimistic transitions, remote-snapshot
   merge, filters, provisioning-link parsing, runtime-context validation, the
-  wait classifier, and the pure `KdsFeedEngine` state machine.
+  wait classifier, and `KdsFeedEngine` — the actor that owns the feed:
+  optimistic dispatch, poll merge, persistence, and the `observe()` stream.
 - **API** — the generated client (package-internal) behind the ``KdsAPI``
   facade, `KdsCredentials`/`KdsContext` plumbing, the guest-text sanitizer, and
   ``MockKdsAPI`` for Mock mode.

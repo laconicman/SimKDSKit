@@ -84,14 +84,39 @@ client-build time and deleted when provisioning flags a target change. The
 Android Keystore AES codec is not ported: Keychain is the encrypted store, so
 the codec was mechanism without a problem.
 
-## The feed engine is pure
+## The feed engine is an actor over a facade
 
 `KdsFeedEngine` holds the transition logic the Kotlin `FakeKdsRepository` mixed
 with coroutines: optimistic dispatch, failure rollback, refresh-on-conflict,
-snapshot merge, dedupe, persistence intent. It takes `now` as a parameter and
-returns new state — the app's controller owns the Tasks, the clock, and the
-stores. This is what makes the repository test-suite a package suite instead of
-an app suite, and it is what a future widget would reuse.
+snapshot merge, dedupe, persistence. It is an `actor` talking only to
+`any KdsAPI` and building `KdsContext` snapshots from current settings per
+call; the app's controller owns the Tasks, the clock is injected, and views
+subscribe through `observe()` where Android collected a `StateFlow`.
+`start()` is the eager-init fetch made async — construction itself never
+touches the network.
+
+Actors re-enter at every `await`, so the engine guards two races the Kotlin
+lock structure implied rather than stated. `dispatch` chains through a task
+queue — the `synchronized(dispatchLock)` port — so one action's whole lifecycle
+(optimistic edit, backend call, rollback-or-confirm) finishes before the next
+begins. Fetches carry a generation stamp: a result that lands after a settings
+change or a newer fetch is discarded instead of merging the old backend's
+board. A failed action rolls back only its own ticket's transition — a poll
+that merged meanwhile survives — and a successful `start` clears a persisted
+error, since a connected board must not show last session's banner.
+
+`updateSettings(_:api:)` takes the rebuilt facade when connection parameters
+move (the app rebuilds the client; the engine never mutates one). A backend-
+identity change — mode, base URL, location, or a swapped client — clears the
+board and pending-action bookkeeping; a station-only change within one backend
+merely drops the old station's tickets. The Kotlin `emitRemoteTicket` push
+path is not ported — Generic KDS v1 has no push channel, and the mock already
+drives arrivals through `refresh`.
+
+Persistence is a seam: `KdsSettingsStore` with an in-memory store for
+tests/previews and a UserDefaults store for the app. The persisted slice is
+`KdsPersistedSettings` — device settings, board filters, last action error —
+which is why the domain settings types are `Codable`.
 
 ## What the port deletes
 

@@ -4,7 +4,7 @@ public enum KdsConnectionState: String, Sendable, Hashable {
     case connected, connecting, offline, reconnecting
 }
 
-public struct KdsActionError: Sendable, Hashable {
+public struct KdsActionError: Sendable, Hashable, Codable {
     public var ticketNumber: String
     public var message: String
     public var failedAt: Date
