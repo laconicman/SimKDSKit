@@ -29,6 +29,16 @@ SHA-256 at vendoring: `f7f42b6ddc47ecd24f2da8e71a116d28ce28c2dff69b837bf58356883
   re-vendored. The upstream conformance checker only guards structure, so it
   never saw the defect; the generator did.
 
+## Upstream notes
+
+Everything we owe upstream — defects found in the Android original while
+porting, and proposals for the contract itself — collects in `Upstream/` at the
+repository root, one note per upstream with evidence and a pasteable report
+(`Upstream/README.md` indexes them). The contract is not an industry standard
+and no such standard exists for the POS→KDS lifecycle (checked 2026-09-28;
+reasoning in `Upstream/generic-kds-api-v1-proposals.md`), so v1 remains ours to
+improve, following its own breaking/non-breaking rules.
+
 ## Re-vendoring
 
 ```bash
