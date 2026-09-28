@@ -132,6 +132,7 @@ actor ScriptedKdsAPI: KdsAPI {
     private var stationsResult: Result<[KdsStationDirectoryEntry], KdsAPIError>
     private var actionHook: (@Sendable () async -> Void)?
     private var refreshHook: (@Sendable () async -> Void)?
+    private var fetchHook: (@Sendable () async -> Void)?
 
     private(set) var sentActions: [KdsAction] = []
     private(set) var fetchCount = 0
@@ -163,6 +164,11 @@ actor ScriptedKdsAPI: KdsAPI {
         refreshHook = hook
     }
 
+    /// Same seam on the initial fetch.
+    func setFetchHook(_ hook: @escaping @Sendable () async -> Void) {
+        fetchHook = hook
+    }
+
     func fetchStations(context: KdsContext) async throws(KdsAPIError) -> [KdsStationDirectoryEntry] {
         stationFetchCount += 1
         return try stationsResult.get()
@@ -170,6 +176,7 @@ actor ScriptedKdsAPI: KdsAPI {
 
     func fetchActiveTickets(context: KdsContext) async throws(KdsAPIError) -> [KdsTicket] {
         fetchCount += 1
+        await fetchHook?()
         return fetchQueue.isEmpty ? fallbackTickets : try fetchQueue.removeFirst().get()
     }
 

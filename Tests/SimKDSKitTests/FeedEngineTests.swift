@@ -623,6 +623,92 @@ struct FeedEngineTests {
         #expect(ticket?.readyAt == base) // pickup wait starts at first sight
     }
 
+    @Test("readyAt and lastSyncedAt are stamped after the fetch returns, not before it was sent")
+    func readyAtExcludesFetchLatency() async throws {
+        var ready = seed("A-43")
+        ready.status = .ready
+        ready.readyAt = nil
+        let api = ScriptedKdsAPI(tickets: [seed("A-42"), ready])
+        let clock = MutableClock(base)
+        let engine = makeEngine(api, clock: clock)
+        await api.setFetchHook { clock.advance(by: 30) } // a slow network
+        await engine.start()
+
+        // 30 s of latency is not 30 s of pickup wait.
+        let afterFetch = base.addingTimeInterval(30)
+        #expect(await engine.state.tickets.first { $0.displayNumber == "A-43" }?.readyAt == afterFetch)
+        #expect(await engine.state.lastSyncedAt == afterFetch)
+
+        await api.setRefreshHook { clock.advance(by: 30) }
+        await engine.refresh()
+        #expect(await engine.state.lastSyncedAt == base.addingTimeInterval(60))
+    }
+
+    @Test("Duplicate ticket ids in the initial fetch are folded, not fatal")
+    func duplicateIdsOnStart() async throws {
+        let api = ScriptedKdsAPI(fetchResults: [.success([seed("A-43"), seed("A-43"), seed("A-42")])])
+        let engine = makeEngine(api)
+        await engine.start()
+
+        #expect(await engine.state.connectionState == .connected)
+        #expect(await engine.state.tickets.filter { $0.displayNumber == "A-43" }.count == 1)
+        #expect(await engine.state.tickets.count == 2)
+    }
+
+    @Test("An action whose settings changed mid-flight leaves the new board alone — no conflict refresh against the new backend")
+    func settingsChangeMidDispatchDiscardsOutcome() async throws {
+        let gate = Gate()
+        let oldAPI = ScriptedKdsAPI(
+            tickets: seeds(),
+            actionResults: [.failure(.conflict(code: .staleVersion, message: "expected 3, got 5"))]
+        )
+        // The replacement backend also serves hot-bar tickets — exactly what a
+        // conflict refresh under the old settings would drag onto the cold board.
+        let newAPI = ScriptedKdsAPI(tickets: seeds())
+        let clock = MutableClock(base)
+        let engine = makeEngine(oldAPI, clock: clock)
+        await engine.start()
+
+        await oldAPI.setActionHook { await gate.wait() }
+        async let dispatching: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await oldAPI.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+
+        var settings = await engine.state.deviceSettings
+        settings.stationId = "station_bar_cold"
+        settings.locationId = "loc-other"
+        await engine.updateSettings(settings, api: newAPI)
+        clock.advance(by: 5)
+        await gate.open()
+        await dispatching
+
+        #expect(await newAPI.refreshCount == 0) // no recovery against a mismatched configuration
+        #expect(await engine.state.tickets.isEmpty) // the cold board stays clear
+        #expect(await engine.state.lastActionError == nil) // the hot bar's error is not the cold bar's
+        #expect(await engine.state.lastSyncedAt == base) // the old action's completion stamped nothing
+    }
+
+    @Test("A successful action whose settings changed mid-flight stamps nothing on the new board")
+    func settingsChangeMidDispatchDiscardsSuccess() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let clock = MutableClock(base)
+        let engine = makeEngine(api, clock: clock)
+        await engine.start()
+
+        await api.setActionHook { await gate.wait() }
+        async let dispatching: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await api.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+
+        var settings = await engine.state.deviceSettings
+        settings.stationId = "station_bar_cold"
+        await engine.updateSettings(settings)
+        clock.advance(by: 5)
+        await gate.open()
+        await dispatching
+
+        #expect(await engine.state.lastSyncedAt == base)
+    }
+
     // MARK: - Observation
 
     @Test("observe() yields the current state, then every change")

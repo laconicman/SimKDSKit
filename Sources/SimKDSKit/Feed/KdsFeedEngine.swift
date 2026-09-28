@@ -74,7 +74,6 @@ public actor KdsFeedEngine {
     public func start() async {
         let settings = state.deviceSettings
         let context = KdsContext(settings: settings)
-        let now = clock()
         let config = configVersion
         fetchTicket += 1
         let mine = fetchTicket
@@ -82,10 +81,14 @@ public actor KdsFeedEngine {
             ?? state.stationDirectory
         do {
             let tickets = try await api.fetchActiveTickets(context: context)
+                .deduplicatedById() // same id policy as the poll path
                 .forDeviceStation(settings)
             // A settings change or a newer fetch landed while this was in
             // flight — publishing now would show the old backend's board.
             guard config == configVersion, mine == fetchTicket else { return }
+            // Sampled after the round trip: pickup wait starts when the
+            // tablet first sees the ticket ready, not when it asked.
+            let now = clock()
             state.tickets = tickets.map { ticket in
                 var ticket = ticket
                 if ticket.status == .ready, ticket.readyAt == nil {
@@ -93,7 +96,7 @@ public actor KdsFeedEngine {
                 }
                 return ticket
             }
-            lastRemote = Dictionary(uniqueKeysWithValues: tickets.map { ($0.id, $0) })
+            lastRemote = Dictionary(tickets.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
             state.connectionState = .connected
             state.lastSyncedAt = now
             state.stationDirectory = directory
@@ -104,7 +107,7 @@ public actor KdsFeedEngine {
             let feedError = KdsActionError(
                 ticketNumber: "feed",
                 message: errorMessage(error),
-                failedAt: now,
+                failedAt: clock(),
                 isFeedError: true
             )
             state.connectionState = .offline
@@ -132,6 +135,10 @@ public actor KdsFeedEngine {
 
     private func runDispatch(_ action: KdsAction) async {
         let previousState = state
+        // The board this action belongs to. If settings move while the call
+        // is out, its outcome — error, rollback, conflict refresh, sync stamp
+        // — would land on the new backend's board, so it is dropped instead.
+        let config = configVersion
         let dispatchAction = stabilized(action, for: previousState.deviceSettings)
         let optimisticTickets = KdsReducer.reduce(previousState.tickets, dispatchAction)
         if optimisticTickets == previousState.tickets,
@@ -150,14 +157,16 @@ public actor KdsFeedEngine {
                 context: KdsContext(settings: previousState.deviceSettings)
             )
             pendingActionOccurredAt.removeValue(forKey: dispatchAction.dedupeKey)
+            guard config == configVersion else { return }
             state.lastSyncedAt = clock()
             state.lastActionError = nil
             persistAndPublish()
         } catch {
             // Typed throws — `error` is already `KdsAPIError`.
-            if error.isLocalValidationFailure {
+            if error.isLocalValidationFailure || config != configVersion {
                 pendingActionOccurredAt.removeValue(forKey: dispatchAction.dedupeKey)
             }
+            guard config == configVersion else { return }
             let actionError = KdsActionError(
                 ticketNumber: dispatchAction.displayNumber,
                 message: errorMessage(error),
@@ -174,7 +183,9 @@ public actor KdsFeedEngine {
             state.lastActionError = actionError
             persistAndPublish()
             if error.requiresRefresh {
-                await refreshSnapshot(lastActionError: actionError, settings: previousState.deviceSettings)
+                // Same configuration as at dispatch (guarded above), so the
+                // current settings are the action's settings.
+                await refreshSnapshot(lastActionError: actionError)
             }
         }
     }
@@ -284,13 +295,9 @@ public actor KdsFeedEngine {
 
     /// Kotlin `refreshActiveSnapshot`: fetch the station's active feed, merge
     /// it pairwise with local tickets, keep terminal history the feed dropped.
-    private func refreshSnapshot(
-        lastActionError: KdsActionError? = nil,
-        settings: KdsDeviceSettings? = nil
-    ) async {
-        let settings = settings ?? state.deviceSettings
+    private func refreshSnapshot(lastActionError: KdsActionError? = nil) async {
+        let settings = state.deviceSettings
         let context = KdsContext(settings: settings)
-        let now = clock()
         let config = configVersion
         fetchTicket += 1
         let mine = fetchTicket
@@ -302,12 +309,17 @@ public actor KdsFeedEngine {
             // A settings change or a newer fetch landed while this was in
             // flight — publishing now would merge the old backend's board.
             guard config == configVersion, mine == fetchTicket else { return }
+            let now = clock() // after the round trip — see `start()`
             for remote in refreshed { lastRemote[remote.id] = remote }
             state.tickets = Self.replacedSnapshot(
                 current: state.tickets,
                 refreshed: refreshed,
                 at: now
             )
+            // Rollback only ever consults rows still on the board — drop the
+            // rest so a day of service doesn't accumulate every ticket seen.
+            let onBoard = Set(state.tickets.map(\.id))
+            lastRemote = lastRemote.filter { onBoard.contains($0.key) }
             state.connectionState = .connected
             state.lastSyncedAt = now
             state.stationDirectory = directory
@@ -315,6 +327,7 @@ public actor KdsFeedEngine {
             persistAndPublish()
         } catch {
             guard config == configVersion, mine == fetchTicket else { return }
+            let now = clock()
             let message = errorMessage(error)
             state.connectionState = .offline
             state.lastActionError = lastActionError.map {
