@@ -780,6 +780,41 @@ struct FeedEngineTests {
         #expect(await engine.state.connectionState == .connected)
     }
 
+    @Test("Dispatches serialize through conflict recovery too — a later success cannot land under a rerun")
+    func dispatchWaitsForConflictRecovery() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            actionResults: [.failure(.conflict(code: .staleVersion, message: "expected 3, got 5")), .success(())]
+        )
+        let engine = makeEngine(api)
+        await engine.start()
+
+        // The conflict's recovery refresh pauses; a settings edit makes it rerun, still paused.
+        await api.setRefreshHook { await gate.wait() }
+        async let failing: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await api.refreshCount == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        var settings = await engine.state.deviceSettings
+        settings.deviceId = "tablet_new"
+        await engine.updateSettings(settings)
+
+        // A second tap queues behind the whole first lifecycle, recovery included —
+        // it is never sent while the rerun is in flight (Kotlin's dispatchLock).
+        async let second: Void = engine.dispatch(action("markReady", ticket: seed("A-42")))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await api.sentActions.count == 1)
+        #expect(await engine.state.lastActionError?.ticketNumber == "A-43")
+
+        await gate.open()
+        await failing
+        await second
+
+        // The success runs last and owns the banner; nothing older can restore it.
+        #expect(await api.sentActions.map(\.displayNumber) == ["A-43", "A-42"])
+        #expect(await engine.state.lastActionError == nil)
+        #expect(await status(engine, "A-42") == .ready)
+    }
+
     @Test("A settings edit that keeps the board (device label) does not strand a failed action")
     func boardPreservingEditKeepsFailureHandling() async throws {
         let gate = Gate()
