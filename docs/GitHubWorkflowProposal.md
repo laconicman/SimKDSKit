@@ -212,9 +212,28 @@ resolves its own threads when it accepts a reply, so this aligns with
 
 ### 10. Release automation on tag push — decision needed (repo-agnostic mechanism, repo-specific assert)
 
-Today: tag by hand → `gh release create X.Y.Z --notes-from-tag`. A workflow can
-do the second step; the interesting part is what to *assert*, since SwiftPM
-has no version file:
+Today: tag by hand → `gh release create`. **The two note sources do not
+combine the way one hopes:** `--notes-from-tag` and `--generate-notes` together
+created nothing on this repo (silent failure), and `--notes-from-tag` alone
+publishes the tag annotation *without* the label-grouped sections from
+`release.yml` (§3) — which is what happened to `0.1.0`. The recipe that gives
+both, per `gh release create --help` ("additional release notes can be
+prepended … with `--notes`"):
+
+```bash
+gh release create 0.2.0 --generate-notes \
+  --notes "$(git tag -l --format='%(contents:body)' 0.2.0)"
+```
+
+The tag body leads, the grouped PR list follows. Retrofit for `0.1.0` once
+`release.yml` is on `main` (generated notes read it from the default branch):
+`gh release edit 0.1.0 --notes "$(git tag -l --format='%(contents:body)' 0.1.0)
+
+$(gh api repos/laconicman/SimKDSKit/releases/generate-notes -X POST -f tag_name=0.1.0 --jq .body)"`
+— the merged PRs #1–#5, #10 were labelled retroactively so the sections fill.
+
+A workflow can run the same recipe on tag push; the interesting part is what
+to *assert*, since SwiftPM has no version file:
 
 ```yaml
 # .github/workflows/release.yml
@@ -230,17 +249,15 @@ jobs:
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - name: Package resolves at this tag
         run: swift build
-      - run: gh release create "$GITHUB_REF_NAME" --notes-from-tag --generate-notes
+      - run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes \
+            --notes "$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")"
         env: { GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
 ```
 
 The two asserts replace DiceLab's `MARKETING_VERSION` check with the SwiftPM
 equivalents: the tag points into `main`'s history, and the package builds at
-the tag (a consumer resolving `minorVersion` gets exactly this). **Note from
-the survey:** `gh release create --notes-from-tag --generate-notes` together
-produced no release on this repo (silent failure); `--notes-from-tag` alone
-worked. Use one, or append generated notes with a second call — verify on the
-next tag before relying on the workflow.
+the tag (a consumer resolving `minorVersion` gets exactly this).
 
 Tradeoff: tags become published artifacts (a typo'd tag publishes a release).
 Mitigation: the build assert, and `gh release delete`.
@@ -297,9 +314,12 @@ ruleset · release `0.1.0` from the tag.
 the ruleset; then §6 becomes usable: `gh pr merge N --merge --auto` after the
 ledger reads 0.
 
-**On the next tag (0.2.0):** exercise §10 by hand once more (`--notes-from-tag`,
-then decide on `--generate-notes`), close the milestone in the same step, then
-commit the workflow so 0.3.0 is automatic.
+**When #16 merges:** retrofit `0.1.0`'s notes with the §10 `gh release edit`
+recipe (release.yml must be on `main` first).
+
+**On the next tag (0.2.0):** run the §10 `--generate-notes --notes "$(tag
+body)"` recipe by hand once, close the milestone in the same step, then commit
+the workflow so 0.3.0 is automatic.
 
 **Decisions owed:** §9 (b vs c) · §10 (automate or keep manual) · §11 (prune
 merge methods) · §12 (badge).

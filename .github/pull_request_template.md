@@ -2,7 +2,7 @@
 
 -
 
-Closes #
+Closes #… — or "no tracked issue" if this is a follow-up that never had one.
 
 ## Checklist
 
