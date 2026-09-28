@@ -27,6 +27,21 @@ public enum KdsRuntimeContextValidation {
         )
     }
 
+    /// The stations call carries no station — an unconfigured device must be
+    /// able to discover stations to select. Location + device identity only.
+    public static func directoryError(context: KdsContext) -> String? {
+        if context.locationId.kdsIsBlank {
+            return "KDS locationId is required before GenericKds request"
+        }
+        if context.deviceId.kdsIsBlank {
+            return "KDS deviceId is required before GenericKds request"
+        }
+        if context.deviceId.isPlaceholderToken() {
+            return "KDS deviceId must be configured before GenericKds request"
+        }
+        return nil
+    }
+
     /// Identity-only check for a `KdsContext` snapshot — the URL was already
     /// vetted when the client was built, so it isn't re-litigated per call.
     public static func requestError(context: KdsContext) -> String? {
@@ -78,6 +93,13 @@ public enum KdsRuntimeContextValidation {
             return "KDS actorId must be configured before GenericKds action"
         }
         return nil
+    }
+
+    /// URL-only check, run at client construction — a remote `http://` base
+    /// URL would send credential headers in cleartext. Identity fields are a
+    /// per-call concern and are not checked here.
+    public static func urlSecurityError(_ apiBaseUrl: String) -> String? {
+        realBackendUrlSecurityError(apiBaseUrl)
     }
 
     /// Real backends are HTTPS; loopback stays HTTP for the local mock server.

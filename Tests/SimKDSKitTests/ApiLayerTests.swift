@@ -1,0 +1,828 @@
+import Foundation
+import HTTPTypes
+import OpenAPIRuntime
+import Testing
+@testable import SimKDSKit
+
+// MARK: - Shared fixture
+
+private let context = KdsContext(
+    locationId: "loc_1",
+    stationId: "station_bar_hot",
+    deviceId: "ipad-bar-1",
+    deviceName: "Bar iPad",
+    actorId: "op-7",
+    backendMode: .real
+)
+
+private let serverURL = URL(string: "https://kds.example.com")!
+
+private func api(
+    _ transport: any ClientTransport,
+    credentials: KdsCredentials? = nil
+) -> any KdsAPI {
+    KdsAPIs.make(serverURL: serverURL, credentials: credentials, transport: transport)
+}
+
+private extension HTTPRequest {
+    func header(_ name: String) -> String? {
+        headerFields[HTTPField.Name(name)!]
+    }
+}
+
+// MARK: - Auth middleware
+
+@Suite("Auth middleware")
+struct AuthMiddlewareTests {
+    @Test("Bearer credential sets Authorization")
+    func bearer() async throws {
+        let recorder = RequestRecorder()
+        let client = api(RecordingTransport(recorder: recorder), credentials: .bearer("s3cret"))
+
+        _ = try await client.fetchActiveTickets(context: context)
+
+        let request = try #require(await recorder.request)
+        #expect(request.header("Authorization") == "Bearer s3cret")
+        #expect(request.header("X-SimKDS-Api-Key") == nil)
+    }
+
+    @Test("API-key credential sets X-SimKDS-Api-Key")
+    func apiKey() async throws {
+        let recorder = RequestRecorder()
+        let client = api(RecordingTransport(recorder: recorder), credentials: .apiKey("k3y"))
+
+        _ = try await client.fetchActiveTickets(context: context)
+
+        let request = try #require(await recorder.request)
+        #expect(request.header("X-SimKDS-Api-Key") == "k3y")
+        #expect(request.header("Authorization") == nil)
+    }
+
+    @Test("No credential sends no auth header")
+    func none() async throws {
+        let recorder = RequestRecorder()
+        let client = api(RecordingTransport(recorder: recorder))
+
+        _ = try await client.fetchActiveTickets(context: context)
+
+        let request = try #require(await recorder.request)
+        #expect(request.header("Authorization") == nil)
+        #expect(request.header("X-SimKDS-Api-Key") == nil)
+    }
+
+    @Test("Caller middleware runs before auth — credentials never reach a logger")
+    func authIsInnermost() async throws {
+        let spy = RequestRecorder()
+        let wire = RequestRecorder()
+        let client = LiveKdsAPI(client: Client(
+            serverURL: serverURL,
+            credentials: .bearer("s3cret"),
+            transport: RecordingTransport(recorder: wire),
+            additionalMiddlewares: [SpyMiddleware(recorder: spy)]
+        ))
+
+        _ = try await client.fetchActiveTickets(context: context)
+
+        #expect(await spy.request?.header("Authorization") == nil)
+        #expect(await spy.request?.header("X-SimKDS-Api-Key") == nil)
+        #expect(await wire.request?.header("Authorization") == "Bearer s3cret")
+    }
+}
+
+// MARK: - Context headers and request shape
+
+@Suite("Request headers")
+struct RequestHeaderTests {
+    @Test("Stations: locationId query plus context headers")
+    func stations() async throws {
+        let recorder = RequestRecorder()
+        let client = api(
+            RecordingTransport(recorder: recorder, json: #"{"stations":[]}"#)
+        )
+
+        _ = try await client.fetchStations(context: context)
+
+        let request = try #require(await recorder.request)
+        #expect(request.path == "/api/v1/kds/stations?locationId=loc_1")
+        #expect(request.header("X-SimKDS-Location-Id") == "loc_1")
+        #expect(request.header("X-SimKDS-Device-Id") == "ipad-bar-1")
+        // The generator percent-encodes header values on the wire.
+        #expect(request.header("X-SimKDS-Device-Name") == "Bar%20iPad")
+        #expect(request.header("X-SimKDS-Station-Id") == nil) // no station on the directory call
+    }
+
+    @Test("Active tickets: station in path, all context headers")
+    func tickets() async throws {
+        let recorder = RequestRecorder()
+        let client = api(RecordingTransport(recorder: recorder))
+
+        _ = try await client.fetchActiveTickets(context: context)
+
+        let request = try #require(await recorder.request)
+        #expect(request.path == "/api/v1/kds/stations/station_bar_hot/tickets/active")
+        #expect(request.header("X-SimKDS-Station-Id") == "station_bar_hot")
+        #expect(request.header("X-SimKDS-Location-Id") == "loc_1")
+        #expect(request.header("X-SimKDS-Device-Id") == "ipad-bar-1")
+    }
+
+    @Test("Action: idempotency/request-id headers and wire body")
+    func action() async throws {
+        let recorder = RequestRecorder()
+        let client = api(
+            RecordingTransport(recorder: recorder, status: .noContent, json: "")
+        )
+        let occurredAt = Date(timeIntervalSince1970: 1_783_200_000) // stable → stable key
+
+        try await client.applyTicketAction(
+            .markReady(ticketId: "t-1", displayNumber: "A-1", expectedVersion: 4, occurredAt: occurredAt),
+            context: context
+        )
+
+        let request = try #require(await recorder.request)
+        #expect(request.path == "/api/v1/kds/tickets/t-1/actions")
+        #expect(request.method == .post)
+        let idempotency = try #require(request.header("Idempotency-Key"))
+        #expect(idempotency.hasPrefix("kds_action_ipad-bar-1_t-1_mark_ready_4_"))
+        #expect(request.header("X-Request-Id") == "req_\(idempotency)")
+
+        let body = try #require(await recorder.requestBody)
+        let json = try #require(
+            JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]
+        )
+        #expect(json["action"] as? String == "mark_ready")
+        #expect(json["stationId"] as? String == "station_bar_hot")
+        #expect(json["deviceId"] as? String == "ipad-bar-1")
+        #expect(json["actorId"] as? String == "op-7")
+        #expect(json["expectedVersion"] as? Int == 4)
+        #expect(json["occurredAt"] as? String == "2026-07-04T21:20:00Z")
+    }
+
+    @Test("Same inputs give the same idempotency key; different occurredAt changes it")
+    func idempotencyStability() async throws {
+        let recorder = RequestRecorder()
+        let transport = RecordingTransport(recorder: recorder, status: .noContent, json: "")
+        let client = api(transport)
+        let at = Date(timeIntervalSince1970: 1_783_200_000)
+
+        try await client.applyTicketAction(
+            .start(ticketId: "t-9", displayNumber: "A-9", expectedVersion: nil, occurredAt: at),
+            context: context
+        )
+        let first = await recorder.request?.header("Idempotency-Key")
+
+        try await client.applyTicketAction(
+            .start(ticketId: "t-9", displayNumber: "A-9", expectedVersion: nil, occurredAt: at),
+            context: context
+        )
+        let second = await recorder.request?.header("Idempotency-Key")
+        #expect(first == second)
+        #expect(first?.contains("unversioned") == true)
+
+        try await client.applyTicketAction(
+            .start(ticketId: "t-9", displayNumber: "A-9", expectedVersion: nil, occurredAt: at.addingTimeInterval(60)),
+            context: context
+        )
+        let third = await recorder.request?.header("Idempotency-Key")
+        #expect(third != first)
+    }
+
+    @Test("Same-second actions on one ticket get distinct keys — ms ride in the token")
+    func sameSecondKeysDiffer() async throws {
+        let recorder = RequestRecorder()
+        let client = api(RecordingTransport(recorder: recorder, status: .noContent, json: ""))
+        let base = Date(timeIntervalSince1970: 1_783_200_000)
+
+        try await client.applyTicketAction(
+            .start(ticketId: "t-1", displayNumber: "A-1", expectedVersion: 4, occurredAt: base.addingTimeInterval(0.1)),
+            context: context
+        )
+        let first = await recorder.request?.header("Idempotency-Key")
+
+        try await client.applyTicketAction(
+            .start(ticketId: "t-1", displayNumber: "A-1", expectedVersion: 4, occurredAt: base.addingTimeInterval(0.9)),
+            context: context
+        )
+        let second = await recorder.request?.header("Idempotency-Key")
+        #expect(first != nil && second != nil && first != second)
+    }
+}
+
+// MARK: - Status → error mapping
+
+@Suite("Status mapping")
+struct StatusMappingTests {
+    private func actionApi(status: HTTPResponse.Status, json: String = "") -> any KdsAPI {
+        api(StubTransport(status: status, json: json))
+    }
+
+    private let action = KdsAction.complete(
+        ticketId: "t-1", displayNumber: "A-1", expectedVersion: 2,
+        occurredAt: Date(timeIntervalSince1970: 1_783_200_000)
+    )
+
+    @Test("200/202/204 all succeed", arguments: [HTTPResponse.Status.ok, .accepted, .noContent])
+    func successStatuses(status: HTTPResponse.Status) async throws {
+        // 200 and 202 carry a TicketActionResponse body; 204 carries none.
+        let json = status == .noContent ? "" : #"{"ok":true,"ticketId":"t-1"}"#
+        try await actionApi(status: status, json: json)
+            .applyTicketAction(action, context: context)
+    }
+
+    @Test("409 stale_version maps to a refresh-requesting conflict")
+    func staleVersion() async throws {
+        let client = actionApi(
+            status: .conflict,
+            json: #"{"error":{"code":"stale_version","message":"expected 2, got 5"}}"#
+        )
+        do {
+            try await client.applyTicketAction(action, context: context)
+            Issue.record("expected conflict")
+        } catch {
+            guard case let .conflict(code, message) = error else {
+                Issue.record("expected .conflict, got \(error)")
+                return
+            }
+            #expect(code == .staleVersion)
+            #expect(code.requiresRefresh)
+            #expect(message == "expected 2, got 5")
+        }
+    }
+
+    @Test("409 station_mismatch requires refresh; idempotency_conflict does not",
+          arguments: [("station_mismatch", KdsConflictCode.stationMismatch, true),
+                      ("idempotency_conflict", KdsConflictCode.idempotencyConflict, false)])
+    func conflictCodes(wire: String, code: KdsConflictCode, refreshes: Bool) async throws {
+        let client = actionApi(
+            status: .conflict,
+            json: #"{"error":{"code":"\#(wire)","message":"m"}}"#
+        )
+        do {
+            try await client.applyTicketAction(action, context: context)
+            Issue.record("expected conflict")
+        } catch {
+            guard case let .conflict(mapped, _) = error else {
+                Issue.record("expected .conflict, got \(error)")
+                return
+            }
+            #expect(mapped == code)
+            #expect(error.requiresRefresh == refreshes)
+        }
+    }
+
+    @Test("409 without a documented code is conflict(.unknown), no refresh")
+    func unknownConflict() async throws {
+        let client = actionApi(
+            status: .conflict,
+            json: #"{"error":{"code":"device_station_mismatch","message":"m"}}"#
+        )
+        do {
+            try await client.applyTicketAction(action, context: context)
+            Issue.record("expected conflict")
+        } catch {
+            guard case let .conflict(code, _) = error else {
+                Issue.record("expected .conflict, got \(error)")
+                return
+            }
+            #expect(code == .unknown)
+            #expect(!error.requiresRefresh)
+        }
+    }
+
+    @Test("401/403/404/422/500 map to their documented cases",
+          arguments: [
+              (HTTPResponse.Status.unauthorized, #"{"error":{"code":"unauthorized","message":"bad token"}}"#),
+              (.forbidden, #"{"error":{"code":"forbidden","message":"no"}}"#),
+              (.notFound, #"{"error":{"code":"not_found","message":"gone"}}"#),
+              (.unprocessableContent, #"{"error":{"code":"validation_error","message":"bad field"}}"#),
+              (.internalServerError, #"{"error":{"code":"backend_error","message":"boom"}}"#),
+          ])
+    func documentedErrors(status: HTTPResponse.Status, json: String) async throws {
+        let client = actionApi(status: status, json: json)
+        do {
+            try await client.applyTicketAction(action, context: context)
+            Issue.record("expected error for \(status.code)")
+        } catch {
+            switch (status, error) {
+            case (.unauthorized, .unauthorized),
+                 (.forbidden, .forbidden),
+                 (.notFound, .notFound),
+                 (.unprocessableContent, .validationError),
+                 (.internalServerError, .backendError):
+                break
+            default:
+                Issue.record("status \(status.code) mapped to \(error)")
+            }
+        }
+    }
+
+    @Test("Malformed error body still maps the documented status (review r4099351315)",
+          arguments: [
+              (HTTPResponse.Status.unauthorized, KdsAPIError.unauthorized(message: nil)),
+              (.forbidden, .forbidden(message: nil)),
+              (.notFound, .notFound(message: nil)),
+              (.conflict, .conflict(code: .unknown, message: nil)),
+              (.unprocessableContent, .validationError(message: nil)),
+              (.internalServerError, .backendError(message: nil)),
+          ])
+    func malformedErrorBody(status: HTTPResponse.Status, expected: KdsAPIError) async throws {
+        let client = actionApi(status: status, json: "this is not json")
+        do {
+            try await client.applyTicketAction(action, context: context)
+            Issue.record("expected error for \(status.code)")
+        } catch {
+            #expect(error == expected)
+        }
+    }
+
+    @Test("Undocumented status surfaces as .undocumented")
+    func undocumented() async throws {
+        let client = actionApi(status: HTTPResponse.Status(code: 418), json: "{}")
+        do {
+            try await client.applyTicketAction(action, context: context)
+            Issue.record("expected undocumented")
+        } catch {
+            guard case let .undocumented(code) = error else {
+                Issue.record("expected .undocumented, got \(error)")
+                return
+            }
+            #expect(code == 418)
+        }
+    }
+
+    @Test("Malformed feed payload is .decoding, not a crash")
+    func malformedFeed() async throws {
+        let client = api(StubTransport(status: .ok, json: #"{"tickets":[{"bogus":1}]}"#))
+        do {
+            _ = try await client.fetchActiveTickets(context: context)
+            Issue.record("expected decoding error")
+        } catch {
+            guard case .decoding = error else {
+                Issue.record("expected .decoding, got \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("Transport failure is .transport")
+    func transportFailure() async throws {
+        let client = api(FailingTransport())
+        do {
+            _ = try await client.fetchActiveTickets(context: context)
+            Issue.record("expected transport error")
+        } catch {
+            guard case .transport = error else {
+                Issue.record("expected .transport, got \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("A failure never puts the credential in its error message")
+    func errorsDoNotLeakCredential() async throws {
+        let token = "s3cret-token-that-must-not-appear-anywhere"
+        let client = api(FailingTransport(), credentials: .bearer(token))
+        do {
+            _ = try await client.fetchActiveTickets(context: context)
+            Issue.record("expected transport error")
+        } catch {
+            let rendered = "\(error) \(error.localizedDescription)"
+            #expect(!rendered.contains(token))
+            #expect(!rendered.lowercased().contains("bearer"))
+        }
+    }
+}
+
+// MARK: - Local validation
+
+@Suite("Local validation")
+struct LocalValidationTests {
+    private let action = KdsAction.start(
+        ticketId: "t-1", displayNumber: "A-1", expectedVersion: nil,
+        occurredAt: Date(timeIntervalSince1970: 1_783_200_000)
+    )
+
+    @Test("Blank stationId rejects before the wire")
+    func blankStation() async throws {
+        let recorder = RequestRecorder()
+        let client = api(RecordingTransport(recorder: recorder))
+        var bad = context
+        bad.stationId = "  "
+
+        do {
+            _ = try await client.fetchActiveTickets(context: bad)
+            Issue.record("expected localValidation")
+        } catch {
+            #expect(error.isLocalValidationFailure)
+        }
+        #expect(await recorder.request == nil) // nothing went on the wire
+    }
+
+    @Test("Placeholder deviceId rejects")
+    func placeholderDevice() async throws {
+        var bad = context
+        bad.deviceId = "todo"
+        do {
+            _ = try await api(StubTransport(json: #"{"tickets":[]}"#))
+                .fetchActiveTickets(context: bad)
+            Issue.record("expected localValidation")
+        } catch {
+            #expect(error.isLocalValidationFailure)
+        }
+    }
+
+    @Test("Action without actorId rejects; fetch does not")
+    func actorRequiredForAction() async throws {
+        var noActor = context
+        noActor.actorId = ""
+        let client = api(StubTransport(json: #"{"tickets":[]}"#))
+
+        _ = try await client.fetchActiveTickets(context: noActor) // fetch is fine
+
+        do {
+            try await client.applyTicketAction(action, context: noActor)
+            Issue.record("expected localValidation")
+        } catch {
+            #expect(error.isLocalValidationFailure)
+        }
+    }
+
+    @Test("Blank locationId rejects before the wire")
+    func blankLocation() async throws {
+        let recorder = RequestRecorder()
+        let client = api(RecordingTransport(recorder: recorder))
+        var bad = context
+        bad.locationId = ""
+
+        do {
+            _ = try await client.fetchStations(context: bad)
+            Issue.record("expected localValidation")
+        } catch {
+            #expect(error.isLocalValidationFailure)
+        }
+        do {
+            _ = try await client.fetchActiveTickets(context: bad)
+            Issue.record("expected localValidation")
+        } catch {
+            #expect(error.isLocalValidationFailure)
+        }
+        #expect(await recorder.request == nil)
+    }
+
+    @Test("HTTPS URL without a host fails settings preflight")
+    func hostlessHttps() {
+        var settings = KdsDeviceSettings(
+            apiBaseUrl: "https://", locationId: "l", deviceId: "d", backendMode: .real
+        )
+        #expect(KdsRuntimeContextValidation.requestError(settings) != nil)
+        settings.apiBaseUrl = "https:///path-only"
+        #expect(KdsRuntimeContextValidation.requestError(settings) != nil)
+        settings.apiBaseUrl = "https://kds.example.test"
+        #expect(KdsRuntimeContextValidation.requestError(settings) == nil)
+    }
+
+    @Test("Station discovery works with no station selected — it finds the station")
+    func stationDiscoveryNeedsNoStation() async throws {
+        let client = api(StubTransport(json: #"{"stations":[]}"#))
+        var unconfigured = context
+        unconfigured.stationId = ""
+
+        let directory = try await client.fetchStations(context: unconfigured)
+        #expect(directory.isEmpty) // request reached the stub, not preflight
+    }
+}
+
+// MARK: - Mapping and sanitization
+
+@Suite("Mapping and sanitization")
+struct MappingTests {
+    private func ticketsApi(json: String) -> any KdsAPI {
+        api(StubTransport(json: json))
+    }
+
+    @Test("delivery source maps to the online channel")
+    func deliveryIsOnline() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"t-d","displayNumber":"D-1","stationId":"station_bar_hot",
+        "source":"delivery","kitchenState":"new","visibleAt":"2026-07-09T10:00:00Z","items":[]}]}
+        """)
+        let tickets = try await client.fetchActiveTickets(context: context)
+        #expect(tickets.first?.source == .online)
+    }
+
+    @Test("completed + refunded displays as cancelled (Kotlin quirk kept)")
+    func completedRefunded() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"t-r","displayNumber":"R-1","stationId":"s",
+        "source":"pos","kitchenState":"completed","visibleAt":"2026-07-09T10:00:00Z",
+        "metadata":{"paymentState":"refunded"},"items":[]}]}
+        """)
+        let tickets = try await client.fetchActiveTickets(context: context)
+        #expect(tickets.first?.status == .cancelled)
+    }
+
+    @Test("Sensitive strings never reach the board")
+    func sanitization() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"t-s","displayNumber":"S-1","stationId":"s",
+        "source":"pos","kitchenState":"new","visibleAt":"2026-07-09T10:00:00Z",
+        "customerName":"guest_8842@mail.ru",
+        "items":[{"lineId":"l1","name":"order_id=99112233","quantity":1,
+        "modifiers":["t.me/evil","овсяное молоко"],"comment":"+7 999 123-45-67"}]}]}
+        """)
+        let ticket = try #require(try await client.fetchActiveTickets(context: context).first)
+        #expect(ticket.customerName == nil)            // guest_* prefix dropped
+        #expect(ticket.items.first?.name == "Позиция") // id-looking name → placeholder
+        #expect(ticket.items.first?.modifiers == ["овсяное молоко"]) // t.me scrubbed
+        #expect(ticket.items.first?.comment == nil)    // phone scrubbed
+    }
+
+    @Test("A sensitive displayNumber is replaced by an id-derived marker")
+    func displayNumberSanitized() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"ticket-9f4","displayNumber":"guest_77@mail.ru","stationId":"s",
+        "source":"pos","kitchenState":"new","visibleAt":"2026-07-09T10:00:00Z","items":[]}]}
+        """)
+        let ticket = try #require(try await client.fetchActiveTickets(context: context).first)
+        #expect(ticket.displayNumber == "#-9f4")
+    }
+
+    @Test("Line availability preserves the wire's six states")
+    func availabilityStatesPreserved() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"t-a","displayNumber":"A-1","stationId":"s",
+        "source":"pos","kitchenState":"new","visibleAt":"2026-07-09T10:00:00Z",
+        "items":[
+          {"lineId":"l1","name":"a","quantity":1,"availabilityState":"sold_out"},
+          {"lineId":"l2","name":"b","quantity":1,"availabilityState":"stoplisted"},
+          {"lineId":"l3","name":"c","quantity":1,"availabilityState":"blocked"},
+          {"lineId":"l4","name":"d","quantity":1,"availabilityState":"cancelled"}
+        ]}]}
+        """)
+        let ticket = try #require(try await client.fetchActiveTickets(context: context).first)
+        #expect(ticket.items.map(\.availabilityState) == [.soldOut, .stoplisted, .blocked, .cancelled])
+    }
+
+    @Test("Missing metadata yields nil payment/fiscal")
+    func noMetadata() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"t-m","displayNumber":"M-1","stationId":"s",
+        "source":"web","kitchenState":"in_progress","visibleAt":"2026-07-09T10:00:00Z","items":[]}]}
+        """)
+        let ticket = try #require(try await client.fetchActiveTickets(context: context).first)
+        #expect(ticket.paymentState == nil)
+        #expect(ticket.fiscalState == nil)
+        #expect(ticket.status == .inProgress)
+    }
+
+    @Test("Fractional quantities survive mapping")
+    func fractionalQuantity() async throws {
+        let client = ticketsApi(json: """
+        {"tickets":[{"ticketId":"t-w","displayNumber":"W-1","stationId":"s",
+        "source":"pos","kitchenState":"new","visibleAt":"2026-07-09T10:00:00Z",
+        "items":[{"lineId":"l1","name":"Взвешенный товар","quantity":0.5}]}]}
+        """)
+        let ticket = try #require(try await client.fetchActiveTickets(context: context).first)
+        #expect(ticket.items.first?.quantity == 0.5)
+    }
+
+    @Test("Stations sort by sortOrder, inactive entries drop out")
+    func stationDirectory() async throws {
+        let client = api(StubTransport(json: """
+        {"stations":[
+          {"stationId":"s2","route":"r2","label":"B","displayName":"Second",
+           "sortOrder":20,"activeTicketsPath":"/p2","isActive":true},
+          {"stationId":"s1","route":"r1","label":"A","displayName":"First",
+           "sortOrder":10,"activeTicketsPath":"/p1","isActive":true},
+          {"stationId":"s0","route":"r0","label":"X","displayName":"Dead",
+           "sortOrder":1,"activeTicketsPath":"/p0","isActive":false}
+        ]}
+        """))
+        let directory = try await client.fetchStations(context: context)
+        #expect(directory.map(\.stationId) == ["s1", "s2"])
+        #expect(directory.first?.displayName == "First")
+    }
+}
+
+// MARK: - Mock backend
+
+@Suite("Mock backend")
+struct MockKdsAPITests {
+    @Test("Seeds and refresh serve only the context's station, like the live endpoint")
+    func stationScopedFeed() async throws {
+        let mock = MockKdsAPI(now: Date(timeIntervalSince1970: 1_783_200_000))
+        // Shared fixture context is station_bar_hot: A-42 + A-43 only.
+        let seeded = try await mock.fetchActiveTickets(context: context)
+        #expect(seeded.map(\.displayNumber) == ["A-42", "A-43"])
+
+        let after = try await mock.refresh(context: context)
+        let numbers = after.map(\.displayNumber)
+        #expect(numbers.contains("M-13")) // scripted barHot arrival
+        #expect(!numbers.contains("A-44")) // scripted kitchen arrival stays off this feed
+
+        var kitchenContext = context
+        kitchenContext.stationId = "station_kitchen"
+        let kitchenFeed = try await mock.refresh(context: kitchenContext)
+        let kitchenNumbers = kitchenFeed.map(\.displayNumber)
+        #expect(kitchenNumbers.contains("A-44"))
+        let hidden = try #require(kitchenFeed.first { $0.id == "ticket-hidden" })
+        #expect(hidden.paymentState == .paid) // scripted flip reaches its station
+        #expect(await mock.refreshCount == 2)
+        #expect(await mock.fetchCount == 1)
+    }
+
+    @Test("An action on another station's ticket is a station_mismatch conflict, like the live endpoint")
+    func crossStationActionConflicts() async throws {
+        let now = Date(timeIntervalSince1970: 1_783_200_000)
+        let mock = MockKdsAPI(now: now)
+        // Shared fixture context is station_bar_hot; ticket-hidden is seeded on the kitchen.
+        let action = KdsAction.start(ticketId: "ticket-hidden", displayNumber: "M-12", expectedVersion: nil, occurredAt: now)
+
+        let expected = KdsAPIError.conflict(
+            code: .stationMismatch,
+            message: "Ticket ticket-hidden belongs to station_kitchen, not station_bar_hot"
+        )
+        await #expect(throws: expected) {
+            try await mock.applyTicketAction(action, context: context)
+        }
+        #expect(expected.requiresRefresh) // station_mismatch is a refresh-conflict per the spec
+
+        // The kitchen ticket was not touched.
+        var kitchen = context
+        kitchen.stationId = "station_kitchen"
+        let feed = try await mock.refresh(context: kitchen)
+        #expect(feed.first { $0.id == "ticket-hidden" }?.status == .new)
+
+        // An unknown ticket is 404, not a silent success.
+        let ghost = KdsAction.start(ticketId: "ticket-nope", displayNumber: "X-1", expectedVersion: nil, occurredAt: now)
+        await #expect(throws: KdsAPIError.notFound(message: "Ticket ticket-nope is not visible to this client")) {
+            try await mock.applyTicketAction(ghost, context: context)
+        }
+    }
+
+    @Test("Refresh keeps an existing scripted ticket's visibleAt — the wait baseline")
+    func refreshPreservesVisibleAt() async throws {
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
+        let mock = MockKdsAPI(tickets: [], clock: { clock.now })
+
+        var kitchenContext = context
+        kitchenContext.stationId = "station_kitchen"
+        _ = try await mock.refresh(context: kitchenContext)
+        clock.advance(by: 30)
+        let second = try await mock.refresh(context: kitchenContext)
+
+        let a44 = try #require(second.first { $0.id == "ticket-a44" })
+        #expect(a44.visibleAt == Date(timeIntervalSince1970: 1_783_200_000))
+    }
+
+    @Test("Demo directory uses canonical station_* ids that filters can match")
+    func directoryIdsCanonical() {
+        let directory = MockKdsAPI.defaultDirectory()
+        #expect(directory.map(\.stationId) == ["station_kitchen", "station_bar_hot", "station_bar_cold"])
+        let barHot = MockKdsAPI.seedTickets(now: Date()).first { $0.station == .barHot }
+        #expect(barHot?.station.matchesStationId("station_bar_hot") == true)
+    }
+
+    @Test("An accepted action advances the mock's ticket; a later scripted refresh keeps it")
+    func actionPersistsAcrossPolls() async throws {
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
+        let mock = MockKdsAPI(
+            tickets: MockKdsAPI.seedTickets(now: clock.now),
+            clock: { clock.now }
+        )
+
+        try await mock.applyTicketAction(.start(
+            ticketId: "ticket-a43", displayNumber: "A-43",
+            expectedVersion: nil, occurredAt: clock.now
+        ), context: context)
+
+        // Same contract as a live backend: the next fetch reports the new status.
+        let fetched = try await mock.fetchActiveTickets(context: context)
+        #expect(fetched.first { $0.id == "ticket-a43" }?.status == .inProgress)
+
+        // A scripted arrival gets acted on, then the next poll restates it —
+        // the accepted transition must survive the restatement.
+        let first = try await mock.refresh(context: context)
+        #expect(first.first { $0.id == "ticket-m13" }?.status == .new)
+        try await mock.applyTicketAction(.start(
+            ticketId: "ticket-m13", displayNumber: "M-13",
+            expectedVersion: nil, occurredAt: clock.now
+        ), context: context)
+        let second = try await mock.refresh(context: context)
+        #expect(second.first { $0.id == "ticket-m13" }?.status == .inProgress)
+        #expect(second.first { $0.id == "ticket-a43" }?.status == .inProgress)
+    }
+
+    @Test("A completed ticket leaves the mock's active feed, like the live endpoint")
+    func completedLeavesActiveFeed() async throws {
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
+        let mock = MockKdsAPI(
+            tickets: MockKdsAPI.seedTickets(now: clock.now),
+            clock: { clock.now }
+        )
+
+        try await mock.applyTicketAction(.markReady(
+            ticketId: "ticket-a42", displayNumber: "A-42",
+            expectedVersion: nil, occurredAt: clock.now
+        ), context: context)
+        try await mock.applyTicketAction(.complete(
+            ticketId: "ticket-a42", displayNumber: "A-42",
+            expectedVersion: nil, occurredAt: clock.now
+        ), context: context)
+
+        let fetched = try await mock.fetchActiveTickets(context: context)
+        #expect(fetched.first { $0.id == "ticket-a42" } == nil)
+        let refreshed = try await mock.refresh(context: context)
+        #expect(refreshed.first { $0.id == "ticket-a42" } == nil)
+        // History is retained in the store — the ticket isn't gone, just inactive.
+        #expect(await mock.sentActions.count == 2)
+    }
+
+    @Test("failNextAction fires once then clears")
+    func failNext() async throws {
+        let mock = MockKdsAPI(now: Date())
+        let action = KdsAction.start( // A-43 is seeded .new on the fixture's station
+            ticketId: "ticket-a43", displayNumber: "A-43", expectedVersion: nil, occurredAt: Date()
+        )
+        await mock.failNextAction("boom")
+        do {
+            try await mock.applyTicketAction(action, context: context)
+            Issue.record("expected failure")
+        } catch {
+            guard case let .backendError(message) = error else {
+                Issue.record("expected .backendError, got \(error)")
+                return
+            }
+            #expect(message == "boom")
+        }
+        try await mock.applyTicketAction(action, context: context) // second call succeeds
+        #expect(await mock.sentActions.count == 2)
+    }
+
+    @Test("Mode switch sends mock contexts to the mock, real to live")
+    func modeSwitch() async throws {
+        let recorder = RequestRecorder()
+        let mock = MockKdsAPI(now: Date())
+        let switching = ModeSwitchingKdsAPI(
+            mock: mock,
+            live: LiveKdsAPI(client: Client(
+                serverURL: serverURL, credentials: nil,
+                transport: RecordingTransport(recorder: recorder)
+            ))
+        )
+        var mockContext = context
+        mockContext.backendMode = .mock
+
+        _ = try await switching.fetchActiveTickets(context: mockContext)
+        #expect(await mock.fetchCount == 1)
+        #expect(await recorder.request == nil) // nothing touched the wire
+
+        _ = try await switching.fetchActiveTickets(context: context)
+        #expect(await recorder.request != nil)
+    }
+}
+
+// MARK: - Factory
+
+@Suite("KdsAPIs.make")
+struct FactoryTests {
+    @Test("Malformed apiBaseUrl is .localValidation, not a crash")
+    func badUrl() throws {
+        let settings = KdsDeviceSettings(
+            apiBaseUrl: "ht!tp://not a url", locationId: "l", stationId: "s",
+            stationLabel: "S", deviceName: "d", deviceId: "d",
+            actorId: "a", backendMode: .real
+        )
+        do {
+            _ = try KdsAPIs.make(settings: settings, credentials: nil)
+            Issue.record("expected localValidation")
+        } catch {
+            #expect(error.isLocalValidationFailure)
+        }
+    }
+
+    @Test("Remote http:// is rejected at construction — credentials would travel cleartext")
+    func remoteHttpRejected() throws {
+        let settings = KdsDeviceSettings(apiBaseUrl: "http://kds.example.com")
+        do {
+            _ = try KdsAPIs.make(settings: settings, credentials: .bearer("s3cret"))
+            Issue.record("expected localValidation")
+        } catch {
+            #expect(error.isLocalValidationFailure)
+        }
+    }
+
+    @Test("Loopback http and remote https both build", arguments: [
+        "http://localhost:8088", "http://127.0.0.1:8088", "https://kds.example.com",
+    ])
+    func allowedUrls(url: String) throws {
+        _ = try KdsAPIs.make(settings: KdsDeviceSettings(apiBaseUrl: url), credentials: nil)
+    }
+
+    @Test("A padded apiBaseUrl trims the same way validation does")
+    func paddedUrl() throws {
+        _ = try KdsAPIs.make(
+            settings: KdsDeviceSettings(apiBaseUrl: "  https://kds.example.com  "),
+            credentials: nil
+        )
+    }
+}
