@@ -90,9 +90,14 @@ behaviour change.
 `Upstream/` proposals land (`supportedActions` on the station entry, `recall`,
 `fulfill_line`).
 - ``KdsStationDirectoryEntry`` gains `supportedActions: Set<KdsActionKind>`;
-  the reducer gains its first backward transition; ``KdsBoardLayout`` offers
-  only supported actions. This is the capability mechanism — one field, fed by
-  the backend, no flags in the app.
+  the reducer gains its first backward transition. The gate sits where actions
+  are *constructed*, not where they are laid out: `KdsTicket.boardActionPresentation`
+  is the one public source of a ticket's next action, so it takes the station's
+  capabilities and returns nil (or the next *supported* action) for one the
+  backend does not accept; ``KdsBoardLayout`` merely renders what it is given.
+  A check only in the layout would leave that public source offering
+  unsupported actions to any other caller. One field, fed by the backend, one
+  gate, no flags in the app.
 
 **Phase 2 — the second backend.** Trigger: a real one is chosen.
 - `KdsBackendMode` becomes a backend **descriptor** — `mock`, `genericV1`,
@@ -116,6 +121,16 @@ behaviour change.
   the canonical vocabulary, its conflicts into reasons. `GuestTextSanitizer`
   runs on every adapter's output — the board policy does not depend on who
   sends the ticket.
+
+## What this plan is not about
+
+**Several stations on one tablet** (upstream roadmap 3, <doc:Roadmap>) is
+orthogonal. A multi-station `KdsAPI` conformer alone would change nothing:
+``KdsFeedEngine`` filters every snapshot to the one configured station
+(`forDeviceStation`), the reducer merges one station's rows, and the layout
+buckets one board. Multi-station is an *engine and layout* change — a set of
+stations in settings, a per-station or merged board — behind the same seam,
+and it neither needs nor is helped by a second backend.
 
 ## What the iPad app must do now so Phase 2 stays cheap
 
