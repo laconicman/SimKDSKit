@@ -32,7 +32,7 @@ lingua franca — and the alignment table lives in
 
 | Note | Problem | Local state | Status |
 | --- | --- | --- | --- |
-| [simkds-android-findings](simkds-android-findings.md) | Fourteen defect classes that Devin Review found in the Swift port and that trace, line for line, to the Kotlin original: version rollback on merge, terminal-status resurrection, `station_` regex rejecting valid ids, `Int` quantities, ready-wait measured from creation, station-only provisioning link flipping mock→real, `api_key` bypassing auth-param rejection, `https://` with no host accepted, wholesale rollback clobbering concurrent polls, conflict refresh under stale settings, no backend-identity reset, pre-fetch clock stamps, mock feed unscoped by station, directory refetched every 2 s | **All fixed in this package** on `feat/domain` / `feat/api` / `feat/feed` (commits cited per row); SK-4 records the one we kept | **verified 2026-09-28** against `SimKDS-main` 0.1.0 (Forgejo export, no SHA — `CHANGELOG.md` head). Pasteable tracking issue in Russian at the end of the note |
+| [simkds-android-findings](simkds-android-findings.md) | Nineteen defect classes that Devin Review found in the Swift port and that trace, line for line, to the Kotlin original: version rollback on merge, terminal-status resurrection, `station_` regex rejecting valid ids, `Int` quantities, ready-wait measured from creation, station-only provisioning link flipping mock→real, `api_key` bypassing auth-param rejection, `https://` with no host accepted, wholesale rollback clobbering concurrent polls, conflict refresh under stale settings, no backend-identity reset, pre-fetch clock stamps, mock feed unscoped by station, refresh only on `stale_version`, directory refetched every 2 s | **All fixed in this package** on `feat/domain` / `feat/api` / `feat/feed` (commits cited per row); SK-4 records the one we kept | **verified 2026-09-28** against `SimKDS-main` 0.1.0 (Forgejo export, no SHA — `CHANGELOG.md` head). Pasteable tracking issue in Russian at the end of the note |
 | [generic-kds-api-v1-proposals](generic-kds-api-v1-proposals.md) | Contract gaps against what every shipping KDS offers (recall/undo, item-level fulfilment, expo gate, hold/release, backend priority), plus three precision fixes to v1 itself: `ticketId` uniqueness in the feed schema, a rule that server-side content merges bump `version`, and sub-second or nonce guidance for `Idempotency-Key` | **None** — the iOS client implements v1 as written; presentational rows go to <doc:Roadmap> and need no contract change | Research complete (market matrices + DeepWiki deep read of `openshiporg/openfront-restaurant`, link in note). SK-5 is the reminder; issue #9 the tracking copy |
 
 ## Closed without filing
@@ -43,10 +43,22 @@ lingua franca — and the alignment table lives in
 | SimKDS: `fetchStations` skips runtime-context validation | **Not a defect.** Station discovery must work before a station is selected; the Kotlin skips validation there (`RealKdsHttpApiClient.kt:24-42`) and the Swift port briefly required one (PR #3 round 2) — a porting error, fixed in `489c52c`, nothing to report |
 | SimKDS: `Idempotency-Key` collides for same-second actions | **Kotlin is fine; the doc is not.** `Instant.toString()` carries sub-second precision when present (`RealKdsHttpApiClient.kt:402-403`), so collisions need the same millisecond. The port formatted to seconds and did collide (fixed `4b2e0db`). The *documented example* `…_20260709T100000Z` (`docs/api.md:58`) shows seconds, which is what a backend integrator copies — folded into the proposals note as a documentation fix rather than a bug |
 
+## Filing order
+
+The findings note cites SimKDSKit commits and their regression tests as acceptance tests.
+Those commits live on the stacked branches `feat/domain` → `feat/api` → `feat/feed` (PRs #2,
+#3, #4) until the stack merges — a report filed before that points upstream at tests they
+cannot reach from `main`. **File after the stack lands.** The PRs merge with merge commits,
+so the cited SHAs are preserved verbatim on `main`; the note needs no rewrite, only the
+merge to happen. Until then the folder is a draft — which is what this folder is for.
+
 ## Conventions
 
 - **Verify against the source, not the summary.** Every row in the findings note cites the
   Kotlin file and line. Two review findings that *sounded* upstream were not (table above).
+- **A report cites only what upstream can reach.** Branch-only commits and tests are not
+  evidence to a reader of `main`; wait for the merge (above) or cite the branch explicitly
+  as a branch.
 - **Distinguish behaviour from documentation issues**, and say which.
 - **Where upstream has a stated rationale, engage it** — `YandexDeliveryExpress` TD-23 is
   the house example: an ordering this package inverted, but for a reason written down.

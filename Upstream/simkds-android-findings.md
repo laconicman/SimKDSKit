@@ -13,11 +13,13 @@
 Devin Review examined the Swift port PR by PR (`laconicman/SimKDSKit` #2 domain, #3 API,
 #4 feed engine — ~40 findings over 2026-09-24…28). Each finding was fixed in Swift with a
 regression test. This note is the pass that went back to the Kotlin to ask, for each one,
-*was it ported faithfully?* — fourteen classes were. Two review findings that sounded upstream
+*was it ported faithfully?* — nineteen classes were. Two review findings that sounded upstream
 were porting errors instead and are listed in `README.md` under *Closed without filing*.
 
 Severity is the reviewer's, kept where the Kotlin matched. "Fixed in" is the SimKDSKit commit
-whose test names the case; the same test is the acceptance test for an upstream fix.
+whose test names the case; the same test is the acceptance test for an upstream fix. Those
+commits sit on the stacked branches until PRs #2–#4 merge (merge commits — SHAs preserved);
+file this note after that, per `README.md` → *Filing order*.
 
 ## Findings
 
@@ -41,6 +43,7 @@ whose test names the case; the same test is the acceptance test for an upstream 
 | 16 | 🟢 | **The fake feed is not station-scoped.** `fetchActiveTickets` returns every station's tickets; the repository filters afterwards, so the board is right, but the fake does not behave like the live endpoint it stands in for (`/stations/{stationId}/tickets/active`) | `data/KdsApiClient.kt:53-57` | `4b2e0db` |
 | 17 | 🟢 | **Duplicate `ticketId`s in the initial fetch become duplicate rows.** `replaceWithActiveSnapshot` dedupes (`distinctBy { it.id }`); `createInitialFeedState` does not | `data/FakeKdsRepository.kt:59-60` vs `:352-353` | `8466615` — same id policy on both paths |
 | 18 | 🟡 | **`lastSyncedAt` is sampled before the fetch.** `val now = clock()` precedes the network call, so "synced 30 s ago" can be true the moment a slow poll returns | `data/FakeKdsRepository.kt:272` | `8466615` — clock sampled after the round trip |
+| 19 | 🟡 | **Only `stale_version` triggers the conflict refresh.** `docs/api.md` → Error model names two refresh-conflicts, `stale_version` *and* `station_mismatch` ("после них приложение должно заново запросить active tickets"); the client refreshes on the first only, so a ticket re-routed to another station stays on the wrong board until the next poll happens to drop it | `data/RealKdsHttpApiClient.kt:82` — `shouldRefresh = statusCode == 409 && backendErrorCode() == "stale_version"` | Swift follows the document: `KdsConflictCode.requiresRefresh` covers both (`KdsAPIError.swift:13-16`) |
 
 Kept, as a recorded divergence rather than a defect:
 
@@ -51,7 +54,7 @@ Kept, as a recorded divergence rather than a defect:
 
 ## Pasteable tracking issue (Russian, for the Forgejo tracker)
 
-> **iOS-порт нашёл 18 дефектов, воспроизводимых в Android-оригинале**
+> **iOS-порт нашёл 19 дефектов, воспроизводимых в Android-оригинале**
 >
 > При портировании SimKDS на iPad (Swift, `laconicman/SimKDSKit`) ревью каждого слоя выявило
 > дефекты, которые при проверке оказались унаследованными из Kotlin-кода. Ниже — по одному
@@ -79,6 +82,7 @@ Kept, as a recorded divergence rather than a defect:
 > - [ ] Нет generation guard: refresh, завершившийся после смены settings, всё равно публикуется (`FakeKdsRepository.kt:268-316`; `f908ec3`)
 > - [ ] `lastSyncedAt = now` берётся *до* сетевого вызова (`FakeKdsRepository.kt:272`; `8466615`)
 > - [ ] Начальная загрузка не делает `distinctBy { it.id }`, в отличие от refresh (`FakeKdsRepository.kt:59-60` vs `352-353`; `8466615`)
+> - [ ] Refresh после 409 только для `stale_version`; `docs/api.md` называет refresh-конфликтом и `station_mismatch` (`RealKdsHttpApiClient.kt:82`)
 >
 > **Fake client (demo)**
 > - [ ] `refresh` пересоздаёт A-44/M-13/M-12 с `createdAt = now` на каждом poll → таймеры ожидания в демо сбрасываются каждые 2 с (`KdsApiClient.kt:72-80, 94-101`; `4b2e0db`)
