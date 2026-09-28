@@ -102,7 +102,7 @@ bump-bar via external keyboard shortcuts, colour-coded wait thresholds (already
 3. **`Idempotency-Key` example shows second resolution.** `docs/api.md:58` gives
    `…_start_3_20260709T100000Z`. An integrator who copies that pattern for their own tooling
    produces colliding keys for two attempts in one second (the Swift port did exactly this,
-   fixed in `4b2e0db`; the Kotlin is safe only because `Instant.toString()` happens to carry
+   fixed in `582d2cb`; the Kotlin is safe only because `Instant.toString()` happens to carry
    milliseconds). State the rule instead of the example: *"unique per distinct action attempt;
    a retry of the same attempt reuses the key; include sub-second precision or a nonce"*.
    Documentation fix.
