@@ -42,19 +42,30 @@ public actor KdsFeedEngine {
     /// Bumped per fetch — an older poll that finishes after a newer one is
     /// discarded, never merged.
     private var fetchTicket = 0
+    /// When the current board's station directory was last fetched
+    /// successfully; nil until the first fetch and after a backend change.
+    /// The directory changes when a station is added or retired — rarely —
+    /// so unlike tickets it is not refetched on every poll (SK-4).
+    private var directoryFetchedAt: Date?
+    private let directoryRefreshInterval: TimeInterval
 
     /// Deferred start (Kotlin's `eagerInitialFetch = false`): the engine loads
     /// persisted settings and sits at `.connecting` until `start()` runs the
     /// first fetch — construction never touches the network.
+    ///
+    /// `directoryRefreshInterval` is how often a poll also refreshes the
+    /// station directory; the Android reference did so on every 2 s poll.
     public init(
         api: any KdsAPI,
         store: any KdsSettingsStore,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        directoryRefreshInterval: TimeInterval = 60
     ) {
         let persisted = store.load()
         self.api = api
         self.store = store
         self.clock = clock
+        self.directoryRefreshInterval = directoryRefreshInterval
         self.state = KdsFeedState(
             tickets: [],
             connectionState: .connecting,
@@ -90,8 +101,7 @@ public actor KdsFeedEngine {
         let snapshot = settingsVersion
         fetchTicket += 1
         let mine = fetchTicket
-        let directory = (try? await api.fetchStations(context: context))
-            ?? state.stationDirectory
+        let directory = try? await api.fetchStations(context: context) // always, on start
         do {
             let tickets = try await api.fetchActiveTickets(context: context)
                 .forDeviceStation(settings)
@@ -111,7 +121,10 @@ public actor KdsFeedEngine {
             lastRemote = Self.remoteRows(tickets)
             state.connectionState = .connected
             state.lastSyncedAt = now
-            state.stationDirectory = directory
+            if let directory {
+                state.stationDirectory = directory
+                directoryFetchedAt = now
+            }
             state.lastActionError = nil // a successful start clears the stale banner
             persistAndPublish()
         } catch {
@@ -306,8 +319,10 @@ public actor KdsFeedEngine {
             lastRemote.removeAll()
             // The directory belongs to the backend and location, not the
             // device; the previous one's stations must not be offered here
-            // if the new backend's fetch fails.
+            // if the new backend's fetch fails — and the next poll fetches
+            // the new one at once rather than waiting out the interval.
             state.stationDirectory = defaultKdsStationDirectory()
+            directoryFetchedAt = nil
             state.boardFilters.stationId = settings.stationId
         } else {
             if stationChanged {
@@ -349,8 +364,11 @@ public actor KdsFeedEngine {
         do {
             let refreshed = try await api.refresh(context: context)
                 .forDeviceStation(settings)
-            let directory = (try? await api.fetchStations(context: context))
-                ?? state.stationDirectory
+            // The directory rides along only when due; a failed fetch leaves
+            // `directoryFetchedAt` alone so the next poll tries again.
+            let directory: [KdsStationDirectoryEntry]? = isDirectoryDue(at: clock())
+                ? try? await api.fetchStations(context: context)
+                : nil
             guard await mayPublish(snapshot: snapshot, mine: mine, rerun: {
                 await refreshSnapshot(lastActionError: lastActionError)
             }) else { return }
@@ -363,7 +381,10 @@ public actor KdsFeedEngine {
             lastRemote = Self.remoteRows(refreshed)
             state.connectionState = .connected
             state.lastSyncedAt = now
-            state.stationDirectory = directory
+            if let directory {
+                state.stationDirectory = directory
+                directoryFetchedAt = now
+            }
             state.lastActionError = lastActionError
             persistAndPublish()
         } catch {
@@ -388,6 +409,11 @@ public actor KdsFeedEngine {
             )
             persistAndPublish()
         }
+    }
+
+    private func isDirectoryDue(at now: Date) -> Bool {
+        guard let directoryFetchedAt else { return true }
+        return now.timeIntervalSince(directoryFetchedAt) >= directoryRefreshInterval
     }
 
     /// Exactly the rows the latest snapshot reported, by id — so `lastRemote`

@@ -74,6 +74,62 @@ struct FeedEngineTests {
         #expect(await api.stationFetchCount == 1)
     }
 
+    @Test("The station directory rides along with a poll only when due — not on every 2 s tick")
+    func directoryCadence() async throws {
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let clock = MutableClock(base)
+        let engine = KdsFeedEngine(
+            api: api, store: InMemoryKdsSettingsStore(),
+            clock: { clock.now }, directoryRefreshInterval: 60
+        )
+        await engine.start()
+        #expect(await api.stationFetchCount == 1)
+
+        for _ in 0..<5 { // 10 s of polling
+            clock.advance(by: 2)
+            await engine.refresh()
+        }
+        #expect(await api.stationFetchCount == 1) // tickets polled 5×, directory 0×
+
+        clock.advance(by: 50) // 60 s since start → due
+        await engine.refresh()
+        #expect(await api.stationFetchCount == 2)
+    }
+
+    @Test("A failed directory fetch is retried on the next poll, not after the interval")
+    func directoryFailureRetriesNextPoll() async throws {
+        let api = ScriptedKdsAPI(tickets: seeds(), stationsResult: .failure(.backendError(message: "503")))
+        let clock = MutableClock(base)
+        let engine = KdsFeedEngine(
+            api: api, store: InMemoryKdsSettingsStore(),
+            clock: { clock.now }, directoryRefreshInterval: 60
+        )
+        await engine.start() // directory fetch fails; default directory stands
+        clock.advance(by: 2)
+        await engine.refresh()
+        #expect(await api.stationFetchCount == 2) // still nil → tried again
+        #expect(await engine.state.stationDirectory == defaultKdsStationDirectory())
+    }
+
+    @Test("A backend change fetches the new directory on the very next poll")
+    func backendChangeFetchesDirectoryImmediately() async throws {
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let clock = MutableClock(base)
+        let engine = KdsFeedEngine(
+            api: api, store: InMemoryKdsSettingsStore(),
+            clock: { clock.now }, directoryRefreshInterval: 60
+        )
+        await engine.start()
+
+        let newAPI = ScriptedKdsAPI(tickets: seeds())
+        var settings = await engine.state.deviceSettings
+        settings.locationId = "loc-l2"
+        await engine.updateSettings(settings, api: newAPI)
+        clock.advance(by: 2)
+        await engine.refresh()
+        #expect(await newAPI.stationFetchCount == 1) // not gated by the 60 s interval
+    }
+
     @Test("start failure goes offline, stores and persists a feed error")
     func startFailure() async throws {
         let store = InMemoryKdsSettingsStore()
