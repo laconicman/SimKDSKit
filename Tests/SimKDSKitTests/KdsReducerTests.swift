@@ -103,7 +103,7 @@ struct KdsReducerTests {
         #expect(Fixtures.displayNumbers(board.new) == ["A-42", "M-11", "A-43"])
     }
 
-    @Test func unavailableTicketIsHiddenButUnavailableLineIsDisplayMetadata() {
+    @Test(.tags(.regression)) func unavailableTicketIsHiddenButUnavailableLineIsDisplayMetadata() {
         var unavailableTicket = Fixtures.ticket("U-1", status: .new)
         unavailableTicket.availabilityState = .unavailable
         // A ticket the backend returned stays on the board even when one line
@@ -120,7 +120,7 @@ struct KdsReducerTests {
         #expect(board.new.first?.items.first?.availabilityState == .unavailable)
     }
 
-    @Test func staleSnapshotKeepsOptimisticVersionBump() {
+    @Test(.tags(.regression)) func staleSnapshotKeepsOptimisticVersionBump() {
         // Start@3 → local inProgress@4; a stale poll reporting new@3 must not
         // roll the version back, or the next action 409s (review r4099014072).
         var local = Fixtures.ticket("A-50", status: .new, version: 3)
@@ -137,7 +137,7 @@ struct KdsReducerTests {
         #expect(merged.version == 4)
     }
 
-    @Test func markReadyStampsReadyAtFromActionAndMergeKeepsIt() {
+    @Test(.tags(.regression)) func markReadyStampsReadyAtFromActionAndMergeKeepsIt() {
         let inProgress = Fixtures.ticket("A-51", status: .inProgress, version: 4)
         let ready = KdsReducer.reduce([inProgress], .markReady(
             ticketId: inProgress.id, displayNumber: inProgress.displayNumber,
@@ -154,7 +154,7 @@ struct KdsReducerTests {
         #expect(merged.readyAt == baseTime.addingTimeInterval(480))
     }
 
-    @Test func remoteTicketFirstSeenReadyIsStampedAtPollTime() {
+    @Test(.tags(.regression)) func remoteTicketFirstSeenReadyIsStampedAtPollTime() {
         let remoteReady = Fixtures.ticket("A-52", status: .ready, version: 5)
         let merged = KdsReducer.mergeRemoteTicket(
             [], remoteTicket: remoteReady, at: baseTime.addingTimeInterval(300)
@@ -262,7 +262,7 @@ struct KdsReducerTests {
         #expect(Fixtures.displayNumbers(board.new) == ["A-42"])
     }
 
-    @Test func staleBlockedThenReadyNeverResurrectsCompletedTicket() {
+    @Test(.tags(.regression)) func staleBlockedThenReadyNeverResurrectsCompletedTicket() {
         // review r4099320282: completed → blocked → ready must not walk the
         // ticket back onto the board.
         let completed = Fixtures.ticket("A-42", status: .completed)
@@ -282,7 +282,7 @@ struct KdsReducerTests {
         #expect(KdsReducer.visibleBoard(merged).activeTickets.isEmpty)
     }
 
-    @Test func stationMatchingFollowsTheWireContractNotASyntax() {
+    @Test(.tags(.regression)) func stationMatchingFollowsTheWireContractNotASyntax() {
         // review r4099320369: the spec requires a nonempty stationId — "bar-hot"
         // is a legitimate backend id and must match itself.
         var ticket = Fixtures.ticket("A-42", status: .new)

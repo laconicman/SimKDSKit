@@ -389,7 +389,7 @@ struct FeedEngineTests {
         #expect(sent[1].occurredAt == base) // retry reuses the first stamp
     }
 
-    @Test("An actor change between attempts makes the retry a new request — fresh occurredAt, fresh key")
+    @Test("An actor change between attempts makes the retry a new request — fresh occurredAt, fresh key", .tags(.regression))
     func actorChangeInvalidatesRetryStamp() async throws {
         var settings = KdsDeviceSettings()
         settings.backendMode = .real
@@ -415,7 +415,7 @@ struct FeedEngineTests {
         #expect(sent[1].occurredAt == clock.now) // not A's stamp under B's body
     }
 
-    @Test("A backend change drops the previous backend's station directory")
+    @Test("A backend change drops the previous backend's station directory", .tags(.regression))
     func backendChangeResetsDirectory() async throws {
         let foreign = [KdsStationDirectoryEntry(
             stationId: "station_l1_grill", route: "grill", label: "GRILL",
@@ -580,7 +580,7 @@ struct FeedEngineTests {
         #expect(ticket?.version == 5)
     }
 
-    @Test("board() applies the persisted filters", .tags(.regression, .concurrency))
+    @Test("board() applies the persisted filters", .tags(.regression))
     func boardAppliesFilters() async throws {
         let api = ScriptedKdsAPI(tickets: seeds())
         let engine = makeEngine(api)

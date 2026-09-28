@@ -70,7 +70,7 @@ struct AuthMiddlewareTests {
         #expect(request.header("X-SimKDS-Api-Key") == nil)
     }
 
-    @Test("Caller middleware runs before auth — credentials never reach a logger")
+    @Test("Caller middleware runs before auth — credentials never reach a logger", .tags(.regression))
     func authIsInnermost() async throws {
         let spy = RequestRecorder()
         let wire = RequestRecorder()
@@ -186,7 +186,7 @@ struct RequestHeaderTests {
         #expect(third != first)
     }
 
-    @Test("Same-second actions on one ticket get distinct keys — ms ride in the token")
+    @Test("Same-second actions on one ticket get distinct keys — ms ride in the token", .tags(.regression))
     func sameSecondKeysDiffer() async throws {
         let recorder = RequestRecorder()
         let client = api(RecordingTransport(recorder: recorder, status: .noContent, json: ""))
@@ -315,7 +315,7 @@ struct StatusMappingTests {
         }
     }
 
-    @Test("Malformed error body still maps the documented status (review r4099351315)",
+    @Test("Malformed error body still maps the documented status (review r4099351315)", .tags(.regression),
           arguments: [
               (HTTPResponse.Status.unauthorized, KdsAPIError.unauthorized(message: nil)),
               (.forbidden, .forbidden(message: nil)),
@@ -480,7 +480,7 @@ struct LocalValidationTests {
         #expect(KdsRuntimeContextValidation.requestError(settings) == nil)
     }
 
-    @Test("Station discovery works with no station selected — it finds the station")
+    @Test("Station discovery works with no station selected — it finds the station", .tags(.regression))
     func stationDiscoveryNeedsNoStation() async throws {
         let client = api(StubTransport(json: #"{"stations":[]}"#))
         var unconfigured = context
@@ -536,7 +536,7 @@ struct MappingTests {
         #expect(ticket.items.first?.comment == nil)    // phone scrubbed
     }
 
-    @Test("A sensitive displayNumber is replaced by an id-derived marker")
+    @Test("A sensitive displayNumber is replaced by an id-derived marker", .tags(.regression))
     func displayNumberSanitized() async throws {
         let client = ticketsApi(json: """
         {"tickets":[{"ticketId":"ticket-9f4","displayNumber":"guest_77@mail.ru","stationId":"s",
@@ -546,7 +546,7 @@ struct MappingTests {
         #expect(ticket.displayNumber == "#-9f4")
     }
 
-    @Test("Line availability preserves the wire's six states")
+    @Test("Line availability preserves the wire's six states", .tags(.regression))
     func availabilityStatesPreserved() async throws {
         let client = ticketsApi(json: """
         {"tickets":[{"ticketId":"t-a","displayNumber":"A-1","stationId":"s",
@@ -607,7 +607,7 @@ struct MappingTests {
 
 @Suite("Mock backend", .tags(.mock))
 struct MockKdsAPITests {
-    @Test("Seeds and refresh serve only the context's station, like the live endpoint")
+    @Test("Seeds and refresh serve only the context's station, like the live endpoint", .tags(.regression))
     func stationScopedFeed() async throws {
         let mock = MockKdsAPI(now: Date(timeIntervalSince1970: 1_783_200_000))
         // Shared fixture context is station_bar_hot: A-42 + A-43 only.
@@ -630,7 +630,7 @@ struct MockKdsAPITests {
         #expect(await mock.fetchCount == 1)
     }
 
-    @Test("An action on another station's ticket is a station_mismatch conflict, like the live endpoint")
+    @Test("An action on another station's ticket is a station_mismatch conflict, like the live endpoint", .tags(.regression))
     func crossStationActionConflicts() async throws {
         let now = Date(timeIntervalSince1970: 1_783_200_000)
         let mock = MockKdsAPI(now: now)
@@ -659,7 +659,7 @@ struct MockKdsAPITests {
         }
     }
 
-    @Test("Refresh keeps an existing scripted ticket's visibleAt — the wait baseline")
+    @Test("Refresh keeps an existing scripted ticket's visibleAt — the wait baseline", .tags(.regression))
     func refreshPreservesVisibleAt() async throws {
         let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
         let mock = MockKdsAPI(tickets: [], clock: { clock.now })
@@ -674,7 +674,7 @@ struct MockKdsAPITests {
         #expect(a44.visibleAt == Date(timeIntervalSince1970: 1_783_200_000))
     }
 
-    @Test("Demo directory uses canonical station_* ids that filters can match")
+    @Test("Demo directory uses canonical station_* ids that filters can match", .tags(.regression))
     func directoryIdsCanonical() {
         let directory = MockKdsAPI.defaultDirectory()
         #expect(directory.map(\.stationId) == ["station_kitchen", "station_bar_hot", "station_bar_cold"])
@@ -682,7 +682,7 @@ struct MockKdsAPITests {
         #expect(barHot?.station.matchesStationId("station_bar_hot") == true)
     }
 
-    @Test("An accepted action advances the mock's ticket; a later scripted refresh keeps it")
+    @Test("An accepted action advances the mock's ticket; a later scripted refresh keeps it", .tags(.regression))
     func actionPersistsAcrossPolls() async throws {
         let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
         let mock = MockKdsAPI(
@@ -712,7 +712,7 @@ struct MockKdsAPITests {
         #expect(second.first { $0.id == "ticket-a43" }?.status == .inProgress)
     }
 
-    @Test("A completed ticket leaves the mock's active feed, like the live endpoint")
+    @Test("A completed ticket leaves the mock's active feed, like the live endpoint", .tags(.regression))
     func completedLeavesActiveFeed() async throws {
         let clock = MutableClock(Date(timeIntervalSince1970: 1_783_200_000))
         let mock = MockKdsAPI(
@@ -800,7 +800,7 @@ struct FactoryTests {
         }
     }
 
-    @Test("Remote http:// is rejected at construction — credentials would travel cleartext")
+    @Test("Remote http:// is rejected at construction — credentials would travel cleartext", .tags(.regression))
     func remoteHttpRejected() throws {
         let settings = KdsDeviceSettings(apiBaseUrl: "http://kds.example.com")
         do {
@@ -818,7 +818,7 @@ struct FactoryTests {
         _ = try KdsAPIs.make(settings: KdsDeviceSettings(apiBaseUrl: url), credentials: nil)
     }
 
-    @Test("A padded apiBaseUrl trims the same way validation does")
+    @Test("A padded apiBaseUrl trims the same way validation does", .tags(.regression))
     func paddedUrl() throws {
         _ = try KdsAPIs.make(
             settings: KdsDeviceSettings(apiBaseUrl: "  https://kds.example.com  "),

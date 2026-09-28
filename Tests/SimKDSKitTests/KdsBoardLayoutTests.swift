@@ -59,7 +59,7 @@ struct KdsBoardLayoutTests {
         #expect(second["ticket-R-01"] == .seconds(60))
     }
 
-    @Test func readyWaitMeasuresFromReadyTransitionNotAppearance() {
+    @Test(.tags(.regression)) func readyWaitMeasuresFromReadyTransitionNotAppearance() {
         // Appeared at +0, went ready at +480, first snapshot at +482 —
         // pickup wait is 2s, not 8m2s of prep time (review r4099014457).
         var ticket = Fixtures.ticket("R-09", status: .ready, visibleAt: baseTime)
