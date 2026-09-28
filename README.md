@@ -11,7 +11,8 @@ What lives here, and the membership test for anything added: *code a KDS surface
   boundary exposes only hand-written domain types and the `KdsAPI` facade.
 - **Domain:** tickets, board, reducer (optimistic transitions + remote merge),
   filters, provisioning-link parsing, runtime-context validation, wait classifier,
-  the pure `KdsFeedEngine` state machine.
+  `KdsFeedEngine` — the actor that owns the feed: optimistic dispatch, poll
+  merge, settings persistence, and the `observe()` stream the app binds to.
 - **Stores:** `KdsSettingsStore` (UserDefaults / in-memory) for plain settings and
   `CredentialStore` (Keychain) for the API token.
 - **Mock:** `MockKdsAPI` — the demo/seeded ticket source for the app's Mock mode.

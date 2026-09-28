@@ -815,6 +815,99 @@ struct FeedEngineTests {
         #expect(await status(engine, "A-42") == .ready)
     }
 
+    @Test("A queued action whose board changed while it waited is dropped, not sent to the new backend")
+    func queuedActionDroppedOnBoardChange() async throws {
+        let gate = Gate()
+        let oldAPI = ScriptedKdsAPI(tickets: seeds())
+        let newAPI = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(oldAPI)
+        await engine.start()
+
+        await oldAPI.setActionHook { await gate.wait() }
+        async let first: Void = engine.dispatch(action(ticket: seed("A-43")))
+        while await oldAPI.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+        async let queued: Void = engine.dispatch(action("markReady", ticket: seed("A-42"))) // waits behind `first`
+        try await Task.sleep(for: .milliseconds(20))
+
+        var settings = await engine.state.deviceSettings
+        settings.locationId = "loc-other"
+        await engine.updateSettings(settings, api: newAPI)
+        await gate.open()
+        await first
+        await queued
+
+        // The tap on A-42 was made on the old board; it must not reach the new backend.
+        #expect(await newAPI.sentActions.isEmpty)
+        #expect(await oldAPI.sentActions.map(\.displayNumber) == ["A-43"])
+    }
+
+    @Test("A late start() fetch merges — it does not put a confirmed action's ticket back")
+    func lateStartMergesOverDispatchedProgress() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+        await engine.start()
+
+        // A second start() (scene re-activation) pauses on its fetch…
+        await api.setFetchHook { await gate.wait() }
+        async let restarting: Void = engine.start()
+        while await api.fetchCount < 2 { try await Task.sleep(for: .milliseconds(1)) }
+        // …while an action on A-43 completes.
+        await api.setActionHook {}
+        await engine.dispatch(action(ticket: seed("A-43")))
+        #expect(await status(engine, "A-43") == .inProgress)
+
+        await gate.open()
+        await restarting
+
+        // The fetch predates the action; it must not show A-43 as new again.
+        #expect(await status(engine, "A-43") == .inProgress)
+        #expect(await engine.state.connectionState == .connected)
+    }
+
+    @Test("A failed action on a ticket the latest poll dropped removes the row rather than resurrecting it")
+    func rollbackRemovesTicketTheFeedDropped() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            refreshResults: [.success([seed("A-43")])], // the poll no longer reports A-42
+            actionResults: [.failure(.backendError(message: "backend timeout"))]
+        )
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setActionHook { await gate.wait() }
+        async let dispatching: Void = engine.dispatch(action("markReady", ticket: seed("A-42"))) // in progress → ready
+        while await api.sentActions.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+        await engine.refresh() // A-42 survives only as optimistic "ready" history
+        #expect(await status(engine, "A-42") == .ready)
+
+        await gate.open()
+        await dispatching
+
+        // Rolling back to in-progress would make an absent ticket active again.
+        #expect(await status(engine, "A-42") == nil)
+        #expect(await engine.state.lastActionError?.ticketNumber == "A-42")
+    }
+
+    @Test("A paused observer receives only the newest board, not every snapshot since it paused")
+    func observerBuffersNewestOnly() async throws {
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+        let stream = await engine.observe()
+        var iterator = stream.makeAsyncIterator()
+        _ = await iterator.next() // the initial .connecting value
+
+        await engine.start()
+        await engine.refresh()
+        await engine.refresh()
+        await engine.dispatch(action(ticket: seed("A-43"))) // several publishes while paused
+
+        // Resuming yields the latest state directly — no replay of the intermediate boards.
+        let resumed = await iterator.next()
+        #expect(resumed?.tickets.first { $0.displayNumber == "A-43" }?.status == .inProgress)
+    }
+
     @Test("A settings edit that keeps the board (device label) does not strand a failed action")
     func boardPreservingEditKeepsFailureHandling() async throws {
         let gate = Gate()

@@ -18,10 +18,11 @@ public actor KdsFeedEngine {
     /// `occurredAt` per pending real-mode action — retries of a failed action
     /// reuse the first stamp so the backend sees one idempotency key.
     private var pendingActionOccurredAt: [String: Date] = [:]
-    /// The newest backend truth per ticket id, as last reported by fetch or
-    /// poll. Rollback consults it: a board row is merged local+remote, so the
-    /// remote half must be kept separately to know whether a failed action's
-    /// optimism still stands against what the backend actually reported.
+    /// The latest snapshot's rows by id — see `remoteRows`. Rollback consults
+    /// it: a board row is merged local+remote, so the remote half must be kept
+    /// separately to know whether a failed action's optimism still stands
+    /// against what the backend actually reported, or whether the backend has
+    /// stopped reporting the ticket at all.
     private var lastRemote: [String: KdsTicket] = [:]
     private var continuations: [UUID: AsyncStream<KdsFeedState>.Continuation] = [:]
     /// Kotlin's `synchronized(dispatchLock)`: action lifecycles serialize so a
@@ -65,9 +66,13 @@ public actor KdsFeedEngine {
     }
 
     /// Every state change, current value first — the controller's binding.
+    /// Each value is the whole board, so a subscriber that pauses needs only
+    /// the newest one: older snapshots are obsolete, not a backlog to replay.
     public func observe() -> AsyncStream<KdsFeedState> {
         let id = UUID()
-        let (stream, continuation) = AsyncStream<KdsFeedState>.makeStream()
+        let (stream, continuation) = AsyncStream<KdsFeedState>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
         continuations[id] = continuation
         continuation.onTermination = { [weak self] _ in
             Task { await self?.removeContinuation(id) }
@@ -89,20 +94,21 @@ public actor KdsFeedEngine {
             ?? state.stationDirectory
         do {
             let tickets = try await api.fetchActiveTickets(context: context)
-                .deduplicatedById() // same id policy as the poll path
                 .forDeviceStation(settings)
             guard await mayPublish(snapshot: snapshot, mine: mine, rerun: { await start() }) else { return }
             // Sampled after the round trip: pickup wait starts when the
             // tablet first sees the ticket ready, not when it asked.
             let now = clock()
-            state.tickets = tickets.map { ticket in
-                var ticket = ticket
-                if ticket.status == .ready, ticket.readyAt == nil {
-                    ticket.readyAt = now // first seen ready at this fetch
-                }
-                return ticket
-            }
-            lastRemote = Dictionary(tickets.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            // Merged, not assigned: an action can confirm while this fetch is
+            // out, and a snapshot that predates it must not put the ticket back.
+            // `mergeRemoteTicket` never rolls a more-advanced local status back
+            // and stamps first-seen `readyAt` — the same policy as the poll.
+            state.tickets = Self.replacedSnapshot(
+                current: state.tickets,
+                refreshed: tickets,
+                at: now
+            )
+            lastRemote = Self.remoteRows(tickets)
             state.connectionState = .connected
             state.lastSyncedAt = now
             state.stationDirectory = directory
@@ -130,9 +136,14 @@ public actor KdsFeedEngine {
     /// `synchronized(dispatchLock)` — so a slow first action can't interleave
     /// its rollback with a second action's optimistic edit.
     public func dispatch(_ action: KdsAction) async {
+        // The board the tap was made on. A queued action whose board changed
+        // while it waited would address another backend's or station's ticket
+        // — it is dropped before it runs, not sent to the wrong place.
+        let board = boardVersion
         let previous = dispatchTail
         let current = Task { [previous] in
             await previous?.value
+            guard board == boardVersion else { return }
             await runDispatch(action)
         }
         dispatchTail = current
@@ -202,9 +213,12 @@ public actor KdsFeedEngine {
     /// refreshed fields on this one) survives. Wholesaler rollback to
     /// `previousState.tickets` would clobber those intervening changes.
     ///
-    /// Three cases, in precedence order:
+    /// Four cases, in precedence order:
     /// - A merge changed the row's status while the call was out — the remote
     ///   won; the row is already truer than our rejected optimism.
+    /// - The latest snapshot dropped this ticket (`lastRemote` lost it): the
+    ///   row survived only as optimistic history, and restoring an active
+    ///   status would resurrect a ticket the feed no longer shows — remove it.
     /// - A poll delivered new remote truth for this ticket (`lastRemote`
     ///   moved) without reaching the optimistic status — restore that truth;
     ///   a mere version bump still counts as "behind" and must roll back.
@@ -224,8 +238,13 @@ public actor KdsFeedEngine {
         guard current.status == produced.status
         else { return } // a merge decided this row — remote won
 
-        if let remote = lastRemote[action.ticketId], remote != remoteAtDispatch {
-            // The backend spoke about this ticket while the call was out.
+        let remote = lastRemote[action.ticketId]
+        if remote != remoteAtDispatch {
+            // The backend spoke about this ticket while the call was out…
+            guard let remote else {
+                state.tickets.remove(at: index) // …by no longer reporting it
+                return
+            }
             if remote.status == produced.status {
                 return // it reached the goal independently — failure is moot
             }
@@ -321,16 +340,12 @@ public actor KdsFeedEngine {
                 await refreshSnapshot(lastActionError: lastActionError)
             }) else { return }
             let now = clock() // after the round trip — see `start()`
-            for remote in refreshed { lastRemote[remote.id] = remote }
             state.tickets = Self.replacedSnapshot(
                 current: state.tickets,
                 refreshed: refreshed,
                 at: now
             )
-            // Rollback only ever consults rows still on the board — drop the
-            // rest so a day of service doesn't accumulate every ticket seen.
-            let onBoard = Set(state.tickets.map(\.id))
-            lastRemote = lastRemote.filter { onBoard.contains($0.key) }
+            lastRemote = Self.remoteRows(refreshed)
             state.connectionState = .connected
             state.lastSyncedAt = now
             state.stationDirectory = directory
@@ -358,6 +373,15 @@ public actor KdsFeedEngine {
             )
             persistAndPublish()
         }
+    }
+
+    /// Exactly the rows the latest snapshot reported, by id — so `lastRemote`
+    /// says both what the backend last said about a ticket *and* whether it
+    /// still mentions it at all; a ticket the feed dropped is absent here even
+    /// while its row survives on the board as history. Bounded by the feed,
+    /// so a day of service accumulates nothing.
+    private static func remoteRows(_ snapshot: [KdsTicket]) -> [String: KdsTicket] {
+        Dictionary(snapshot.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
     }
 
     /// Whether a completed fetch may publish its outcome — tickets or failure.
