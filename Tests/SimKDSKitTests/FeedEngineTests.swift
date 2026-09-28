@@ -687,6 +687,32 @@ struct FeedEngineTests {
         #expect(await engine.state.lastSyncedAt == base) // the old action's completion stamped nothing
     }
 
+    @Test("A fetch that fails under superseded device identity does not mark the corrected feed offline")
+    func staleIdentityFetchFailureDiscarded() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            refreshResults: [.failure(.localValidation("KDS deviceId must be configured"))]
+        )
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setRefreshHook { await gate.wait() }
+        async let refreshing: Void = engine.refresh()
+        while await api.refreshCount == 0 { try await Task.sleep(for: .milliseconds(1)) }
+
+        var settings = await engine.state.deviceSettings
+        settings.deviceId = "tablet_new" // same board — the request context is what changed
+        await engine.updateSettings(settings)
+        await gate.open()
+        await refreshing
+
+        // The failure describes a request tablet_new never made.
+        #expect(await engine.state.connectionState == .connected)
+        #expect(await engine.state.lastActionError == nil)
+        #expect(await engine.state.tickets.isEmpty == false) // board kept: same backend, same station
+    }
+
     @Test("A settings edit that keeps the board (device label) does not strand a failed action")
     func boardPreservingEditKeepsFailureHandling() async throws {
         let gate = Gate()

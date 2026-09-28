@@ -27,11 +27,15 @@ public actor KdsFeedEngine {
     /// Kotlin's `synchronized(dispatchLock)`: action lifecycles serialize so a
     /// slow backend call can't interleave with a second tap's optimistic edit.
     private var dispatchTail: Task<Void, Never>?
+    /// Bumped on every settings change. A fetch is a request built from one
+    /// settings snapshot — device, actor, location, station headers — so once
+    /// that snapshot is superseded its outcome describes a request this device
+    /// no longer makes: neither its tickets nor its failure are published.
+    private var settingsVersion = 0
     /// Bumped when the board's identity changes — a different backend or
-    /// station. A fetch or action that started under the previous board must
-    /// not publish onto this one; edits that keep the board (device label,
-    /// actor) leave in-flight work valid, so a failure can still roll back
-    /// and report on a ticket that is still here.
+    /// station. Action outcomes key to this, not to `settingsVersion`: an edit
+    /// that keeps the board (device label, actor) must still let a failure
+    /// roll back and report on a ticket that is still here.
     private var boardVersion = 0
     /// Bumped per fetch — an older poll that finishes after a newer one is
     /// discarded, never merged.
@@ -77,7 +81,7 @@ public actor KdsFeedEngine {
     public func start() async {
         let settings = state.deviceSettings
         let context = KdsContext(settings: settings)
-        let board = boardVersion
+        let snapshot = settingsVersion
         fetchTicket += 1
         let mine = fetchTicket
         let directory = (try? await api.fetchStations(context: context))
@@ -86,9 +90,10 @@ public actor KdsFeedEngine {
             let tickets = try await api.fetchActiveTickets(context: context)
                 .deduplicatedById() // same id policy as the poll path
                 .forDeviceStation(settings)
-            // A board change or a newer fetch landed while this was in
-            // flight — publishing now would show the old backend's board.
-            guard board == boardVersion, mine == fetchTicket else { return }
+            // A settings change or a newer fetch landed while this was in
+            // flight — this request no longer describes the device; neither
+            // its tickets nor its failure belong to the current settings.
+            guard snapshot == settingsVersion, mine == fetchTicket else { return }
             // Sampled after the round trip: pickup wait starts when the
             // tablet first sees the ticket ready, not when it asked.
             let now = clock()
@@ -106,7 +111,7 @@ public actor KdsFeedEngine {
             state.lastActionError = nil // a successful start clears the stale banner
             persistAndPublish()
         } catch {
-            guard board == boardVersion, mine == fetchTicket else { return }
+            guard snapshot == settingsVersion, mine == fetchTicket else { return }
             let feedError = KdsActionError(
                 ticketNumber: "feed",
                 message: errorMessage(error),
@@ -278,6 +283,7 @@ public actor KdsFeedEngine {
             }
             state.tickets = state.tickets.filter { $0.station.matchesStationId(settings.stationId) }
         }
+        settingsVersion += 1
         if backendChanged || stationChanged { boardVersion += 1 }
         persistAndPublish()
     }
@@ -303,7 +309,7 @@ public actor KdsFeedEngine {
     private func refreshSnapshot(lastActionError: KdsActionError? = nil) async {
         let settings = state.deviceSettings
         let context = KdsContext(settings: settings)
-        let board = boardVersion
+        let snapshot = settingsVersion
         fetchTicket += 1
         let mine = fetchTicket
         do {
@@ -311,9 +317,9 @@ public actor KdsFeedEngine {
                 .forDeviceStation(settings)
             let directory = (try? await api.fetchStations(context: context))
                 ?? state.stationDirectory
-            // A board change or a newer fetch landed while this was in
+            // A settings change or a newer fetch landed while this was in
             // flight — publishing now would merge the old backend's board.
-            guard board == boardVersion, mine == fetchTicket else { return }
+            guard snapshot == settingsVersion, mine == fetchTicket else { return }
             let now = clock() // after the round trip — see `start()`
             for remote in refreshed { lastRemote[remote.id] = remote }
             state.tickets = Self.replacedSnapshot(
@@ -331,7 +337,7 @@ public actor KdsFeedEngine {
             state.lastActionError = lastActionError
             persistAndPublish()
         } catch {
-            guard board == boardVersion, mine == fetchTicket else { return }
+            guard snapshot == settingsVersion, mine == fetchTicket else { return }
             let now = clock()
             let message = errorMessage(error)
             state.connectionState = .offline
