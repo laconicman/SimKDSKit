@@ -445,7 +445,7 @@ struct FeedEngineTests {
         #expect(sent[1].occurredAt == base) // retry reuses the first stamp
     }
 
-    @Test("An actor change between attempts makes the retry a new request — fresh occurredAt, fresh key")
+    @Test("An actor change between attempts makes the retry a new request — fresh occurredAt, fresh key", .tags(.regression))
     func actorChangeInvalidatesRetryStamp() async throws {
         var settings = KdsDeviceSettings()
         settings.backendMode = .real
@@ -471,7 +471,7 @@ struct FeedEngineTests {
         #expect(sent[1].occurredAt == clock.now) // not A's stamp under B's body
     }
 
-    @Test("A backend change drops the previous backend's station directory")
+    @Test("A backend change drops the previous backend's station directory", .tags(.regression))
     func backendChangeResetsDirectory() async throws {
         let foreign = [KdsStationDirectoryEntry(
             stationId: "station_l1_grill", route: "grill", label: "GRILL",
@@ -518,7 +518,7 @@ struct FeedEngineTests {
 
     // MARK: - Concurrency
 
-    @Test("A failed action rolls back only its own ticket — a poll that merged meanwhile survives")
+    @Test("A failed action rolls back only its own ticket — a poll that merged meanwhile survives", .tags(.regression, .concurrency))
     func rollbackPreservesConcurrentMerge() async throws {
         let gate = Gate()
         var extra = seed("A-42")
@@ -549,7 +549,7 @@ struct FeedEngineTests {
         #expect(await status(engine, "A-42") == .inProgress) // untouched
     }
 
-    @Test("A failed action does not roll back a ticket a poll advanced meanwhile")
+    @Test("A failed action does not roll back a ticket a poll advanced meanwhile", .tags(.regression, .concurrency))
     func rollbackYieldsToNewerRemote() async throws {
         let gate = Gate()
         var remote = seed("A-43")
@@ -578,7 +578,7 @@ struct FeedEngineTests {
         #expect(await engine.state.lastActionError != nil)
     }
 
-    @Test("A poll that bumps only the version still counts as remote truth — the failed action rolls back to it")
+    @Test("A poll that bumps only the version still counts as remote truth — the failed action rolls back to it", .tags(.regression, .concurrency))
     func rollbackRestoresStaleRemoteTruth() async throws {
         let gate = Gate()
         var remote = seed("A-43")
@@ -607,7 +607,7 @@ struct FeedEngineTests {
         #expect(ticket?.version == 5)
     }
 
-    @Test("A failed action is moot when the remote independently reached the goal")
+    @Test("A failed action is moot when the remote independently reached the goal", .tags(.regression, .concurrency))
     func rollbackMootWhenRemoteConfirms() async throws {
         let gate = Gate()
         var remote = seed("A-43")
@@ -636,7 +636,7 @@ struct FeedEngineTests {
         #expect(ticket?.version == 5)
     }
 
-    @Test("board() applies the persisted filters")
+    @Test("board() applies the persisted filters", .tags(.regression))
     func boardAppliesFilters() async throws {
         let api = ScriptedKdsAPI(tickets: seeds())
         let engine = makeEngine(api)
@@ -650,7 +650,7 @@ struct FeedEngineTests {
         #expect(await engine.board().activeTickets.count == 2)
     }
 
-    @Test("Dispatches serialize through the backend call")
+    @Test("Dispatches serialize through the backend call", .tags(.regression, .concurrency))
     func dispatchesSerialize() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(tickets: seeds())
@@ -677,7 +677,7 @@ struct FeedEngineTests {
         #expect(await api.sentActions.map(\.displayNumber) == ["A-43", "A-42"])
     }
 
-    @Test("A refresh that lands after a settings change is discarded")
+    @Test("A refresh that lands after a settings change is discarded", .tags(.regression, .concurrency))
     func staleRefreshDiscarded() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(tickets: seeds())
@@ -702,7 +702,7 @@ struct FeedEngineTests {
         #expect(await engine.state.connectionState == .connected)
     }
 
-    @Test("A backend-identity change clears the board and its history")
+    @Test("A backend-identity change clears the board and its history", .tags(.regression, .concurrency))
     func backendChangeClearsBoard() async throws {
         let api = ScriptedKdsAPI(tickets: seeds())
         let engine = makeEngine(api)
@@ -718,7 +718,7 @@ struct FeedEngineTests {
         #expect(await engine.state.tickets.isEmpty)
     }
 
-    @Test("A ticket already ready at first fetch gets readyAt stamped at load")
+    @Test("A ticket already ready at first fetch gets readyAt stamped at load", .tags(.regression, .concurrency))
     func readyAtStampedOnStart() async throws {
         var ready = seed("A-43")
         ready.status = .ready
@@ -731,7 +731,7 @@ struct FeedEngineTests {
         #expect(ticket?.readyAt == base) // pickup wait starts at first sight
     }
 
-    @Test("readyAt and lastSyncedAt are stamped after the fetch returns, not before it was sent")
+    @Test("readyAt and lastSyncedAt are stamped after the fetch returns, not before it was sent", .tags(.regression, .concurrency))
     func readyAtExcludesFetchLatency() async throws {
         var ready = seed("A-43")
         ready.status = .ready
@@ -752,7 +752,7 @@ struct FeedEngineTests {
         #expect(await engine.state.lastSyncedAt == base.addingTimeInterval(60))
     }
 
-    @Test("Duplicate ticket ids in the initial fetch are folded, not fatal")
+    @Test("Duplicate ticket ids in the initial fetch are folded, not fatal", .tags(.regression, .concurrency))
     func duplicateIdsOnStart() async throws {
         let api = ScriptedKdsAPI(fetchResults: [.success([seed("A-43"), seed("A-43"), seed("A-42")])])
         let engine = makeEngine(api)
@@ -763,7 +763,7 @@ struct FeedEngineTests {
         #expect(await engine.state.tickets.count == 2)
     }
 
-    @Test("An action whose settings changed mid-flight leaves the new board alone — no conflict refresh against the new backend")
+    @Test("An action whose settings changed mid-flight leaves the new board alone — no conflict refresh against the new backend", .tags(.regression, .concurrency))
     func settingsChangeMidDispatchDiscardsOutcome() async throws {
         let gate = Gate()
         let oldAPI = ScriptedKdsAPI(
@@ -795,7 +795,7 @@ struct FeedEngineTests {
         #expect(await engine.state.lastSyncedAt == base) // the old action's completion stamped nothing
     }
 
-    @Test("A fetch that fails under superseded device identity does not mark the corrected feed offline")
+    @Test("A fetch that fails under superseded device identity does not mark the corrected feed offline", .tags(.regression, .concurrency))
     func staleIdentityFetchFailureDiscarded() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(
@@ -821,7 +821,7 @@ struct FeedEngineTests {
         #expect(await engine.state.tickets.isEmpty == false) // board kept: same backend, same station
     }
 
-    @Test("A settings edit during start() reruns the initial fetch instead of leaving the board connecting")
+    @Test("A settings edit during start() reruns the initial fetch instead of leaving the board connecting", .tags(.regression, .concurrency))
     func settingsEditDuringStartReruns() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(tickets: seeds())
@@ -843,7 +843,7 @@ struct FeedEngineTests {
         #expect(await engine.state.tickets.isEmpty == false)
     }
 
-    @Test("A settings edit during retryReconnect() ends connected, not stuck reconnecting")
+    @Test("A settings edit during retryReconnect() ends connected, not stuck reconnecting", .tags(.regression, .concurrency))
     func settingsEditDuringReconnectReruns() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(tickets: seeds())
@@ -866,7 +866,7 @@ struct FeedEngineTests {
         #expect(await engine.state.connectionState == .connected)
     }
 
-    @Test("Saving unchanged settings does not invalidate a fetch in flight")
+    @Test("Saving unchanged settings does not invalidate a fetch in flight", .tags(.regression, .concurrency))
     func unchangedSettingsKeepFetch() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(tickets: seeds())
@@ -886,7 +886,7 @@ struct FeedEngineTests {
         #expect(await engine.state.connectionState == .connected)
     }
 
-    @Test("Dispatches serialize through conflict recovery too — a later success cannot land under a rerun")
+    @Test("Dispatches serialize through conflict recovery too — a later success cannot land under a rerun", .tags(.regression, .concurrency))
     func dispatchWaitsForConflictRecovery() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(
@@ -921,7 +921,7 @@ struct FeedEngineTests {
         #expect(await status(engine, "A-42") == .ready)
     }
 
-    @Test("A queued action whose board changed while it waited is dropped, not sent to the new backend")
+    @Test("A queued action whose board changed while it waited is dropped, not sent to the new backend", .tags(.regression, .concurrency))
     func queuedActionDroppedOnBoardChange() async throws {
         let gate = Gate()
         let oldAPI = ScriptedKdsAPI(tickets: seeds())
@@ -947,7 +947,7 @@ struct FeedEngineTests {
         #expect(await oldAPI.sentActions.map(\.displayNumber) == ["A-43"])
     }
 
-    @Test("A late start() fetch merges — it does not put a confirmed action's ticket back")
+    @Test("A late start() fetch merges — it does not put a confirmed action's ticket back", .tags(.regression, .concurrency))
     func lateStartMergesOverDispatchedProgress() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(tickets: seeds())
@@ -971,7 +971,7 @@ struct FeedEngineTests {
         #expect(await engine.state.connectionState == .connected)
     }
 
-    @Test("A failed action on a ticket the latest poll dropped removes the row rather than resurrecting it")
+    @Test("A failed action on a ticket the latest poll dropped removes the row rather than resurrecting it", .tags(.regression, .concurrency))
     func rollbackRemovesTicketTheFeedDropped() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(
@@ -996,7 +996,7 @@ struct FeedEngineTests {
         #expect(await engine.state.lastActionError?.ticketNumber == "A-42")
     }
 
-    @Test("A paused observer receives only the newest board, not every snapshot since it paused")
+    @Test("A paused observer receives only the newest board, not every snapshot since it paused", .tags(.regression, .concurrency))
     func observerBuffersNewestOnly() async throws {
         let api = ScriptedKdsAPI(tickets: seeds())
         let engine = makeEngine(api)
@@ -1014,7 +1014,7 @@ struct FeedEngineTests {
         #expect(resumed?.tickets.first { $0.displayNumber == "A-43" }?.status == .inProgress)
     }
 
-    @Test("A settings edit that keeps the board (device label) does not strand a failed action")
+    @Test("A settings edit that keeps the board (device label) does not strand a failed action", .tags(.regression, .concurrency))
     func boardPreservingEditKeepsFailureHandling() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(
@@ -1040,7 +1040,7 @@ struct FeedEngineTests {
         #expect(await engine.state.lastActionError?.ticketNumber == "A-43")
     }
 
-    @Test("A successful action whose settings changed mid-flight stamps nothing on the new board")
+    @Test("A successful action whose settings changed mid-flight stamps nothing on the new board", .tags(.regression, .concurrency))
     func settingsChangeMidDispatchDiscardsSuccess() async throws {
         let gate = Gate()
         let api = ScriptedKdsAPI(tickets: seeds())

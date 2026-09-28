@@ -26,6 +26,21 @@ headers (`X-SimKDS-*`, `Idempotency-Key`, `X-Request-Id`) are generated
 operation parameters; only auth goes through middleware, placed innermost so
 caller-supplied logging middlewares never see the credential header.
 
+*A deliberate divergence from the sibling packages.* `YandexDeliveryExpressAPI`
+puts `AuthMiddleware` *first* and documents the consequence as accepted debt
+(its TD-23): a wire-capture sink sees the exchange exactly as the provider saw
+it, credential included, and the discipline is that sinks never persist
+headers. Here the inverse was chosen after review (PR #3): a KDS tablet is
+shared hardware in a kitchen, and a caller-supplied logging middleware that
+*cannot* observe the token is a smaller promise to keep than one that must not
+write it down. The runtime makes either order easy to state — `UniversalClient`
+folds `middlewares.reversed()`, so the first array element is the outermost
+interceptor (`swift-openapi-runtime` 1.12.1, `UniversalClient.swift:157-177`);
+`SpyMiddleware` in the tests proves the header is absent at the consumer
+position. Copying the sibling's order into `KdsAPIs.make` would reintroduce
+the finding; copying ours into the sibling would break its capture rationale.
+Both are written down so neither gets "harmonised" blind.
+
 ## Concurrency: the package is nonisolated by default
 
 `Package.swift` spells it — `.defaultIsolation(nil)`. Two reasons, either of
@@ -101,9 +116,23 @@ queue — the `synchronized(dispatchLock)` port — so one action's whole lifecy
 (optimistic edit, backend call, rollback-or-confirm) finishes before the next
 begins. Fetches carry a generation stamp: a result that lands after a settings
 change or a newer fetch is discarded instead of merging the old backend's
-board. A failed action rolls back only its own ticket's transition — a poll
-that merged meanwhile survives — and a successful `start` clears a persisted
-error, since a connected board must not show last session's banner.
+board (a settings change reruns the fetch for the current settings; a newer
+fetch simply wins). A failed action rolls back only its own ticket's
+transition — a poll that merged meanwhile survives — and a successful `start`
+clears a persisted error, since a connected board must not show last
+session's banner.
+
+**The poll-loop contract this implies for the app.** "A newer fetch wins" has
+a liveness consequence: if a caller fires `refresh()` on a timer *without
+awaiting the previous call*, and network latency exceeds the interval, every
+poll is superseded before it lands and the board never updates. The engine
+does not queue polls — a poll is a request for the *current* truth, so an
+older one has nothing to add once a newer one exists. Android's loop is
+sequential (`MainActivity`: `while (isActive) { refreshActiveTickets();
+delay(2_000) }`), and the app's `BoardController` must be too: `await
+engine.refresh()`, *then* sleep the interval, in one owned, cancellable task
+(YDelivery's rule 6). `retryReconnect()` from the UI may overlap a poll —
+that is the one intended overlap, and the newer of the two wins.
 
 `updateSettings(_:api:)` takes the rebuilt facade when connection parameters
 move (the app rebuilds the client; the engine never mutates one). A backend-
@@ -187,4 +216,6 @@ Two non-obvious manifest decisions, both forced by the generated code:
 
 - Android reference: `../../SimKDS-main` (Forgejo export).
 - House REST pattern: `YandexDeliveryExpressAPI`, `GitLabKit`,
-  `YooMoneyAPIClient` — same generator, same middleware shape, same test seams.
+  `YooMoneyAPIClient` — same generator, same test seams (`Tags.swift`,
+  `StubTransport`/`RecordingTransport`); middleware *order* deliberately
+  differs from `YandexDeliveryExpressAPI`, see "One client" above.

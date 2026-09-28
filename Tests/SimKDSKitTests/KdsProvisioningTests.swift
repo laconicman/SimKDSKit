@@ -57,7 +57,7 @@ struct KdsProvisioningTests {
         }
     }
 
-    @Test func rejectsSeparatorVariantsOfAuthKeys() {
+    @Test(.tags(.regression)) func rejectsSeparatorVariantsOfAuthKeys() {
         // `api_key` / `bearer_token` are the same words as `apiKey` /
         // `bearerToken` once separators are stripped (review r4099014937).
         let current = KdsDeviceSettings(apiBaseUrl: "https://api.example.test")
@@ -71,7 +71,7 @@ struct KdsProvisioningTests {
         }
     }
 
-    @Test func stationOnlyLinkKeepsMockMode() {
+    @Test(.tags(.regression)) func stationOnlyLinkKeepsMockMode() {
         // A station choice is board-local; it must not flip a demo tablet to
         // a real backend it has no credentials for (review r4099014251).
         let outcome = KdsProvisioning.settings(
@@ -82,7 +82,7 @@ struct KdsProvisioningTests {
         #expect(outcome?.settings.stationId == "station_bar_cold")
     }
 
-    @Test func deviceOnlyLinkKeepsMockMode() {
+    @Test(.tags(.regression)) func deviceOnlyLinkKeepsMockMode() {
         let outcome = KdsProvisioning.settings(
             from: "simkds://provision?deviceId=kds_ipad_01&actorId=barista_01",
             into: KdsDeviceSettings(backendMode: .mock)
@@ -90,7 +90,7 @@ struct KdsProvisioningTests {
         #expect(outcome?.settings.backendMode == .mock)
     }
 
-    @Test func explicitModeParamStillSwitches() {
+    @Test(.tags(.regression)) func explicitModeParamStillSwitches() {
         let outcome = KdsProvisioning.settings(
             from: "simkds://provision?mode=real&api=https%3A%2F%2Fkds.example.test",
             into: KdsDeviceSettings(backendMode: .mock)
@@ -98,7 +98,7 @@ struct KdsProvisioningTests {
         #expect(outcome?.settings.backendMode == .real)
     }
 
-    @Test func conflictingStationParamsLabelFollowsStationId() {
+    @Test(.tags(.regression)) func conflictingStationParamsLabelFollowsStationId() {
         // `station` and `stationId` disagree → the id owns routing, so the
         // label derives from it too (review r4099014572).
         let outcome = KdsProvisioning.settings(
