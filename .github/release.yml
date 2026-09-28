@@ -1,0 +1,21 @@
+# Groups auto-generated release notes by PR label. Labels mirror the
+# Conventional Commit types the PR titles already use, plus the house
+# concerns (tech-debt register, upstream notes). docs/GitHubWorkflowProposal.md §3.
+changelog:
+  categories:
+    - title: Breaking changes (minor bump while 0.x)
+      labels: ["breaking"]
+    - title: Features
+      labels: ["enhancement"]
+    - title: Fixes
+      labels: ["bug"]
+    - title: Upstream — owed to the Android repo or the generator
+      labels: ["upstream"]
+    - title: Tech debt registered or discharged
+      labels: ["tech-debt"]
+    - title: Docs and hygiene
+      labels: ["documentation", "hygiene"]
+    - title: Tests and tooling
+      labels: ["tests"]
+    - title: Other
+      labels: ["*"]

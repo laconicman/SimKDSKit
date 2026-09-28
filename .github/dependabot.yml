@@ -1,0 +1,12 @@
+# Monthly, near-silent: the package's SwiftPM dependencies (openapi runtime,
+# generator, urlsession transport, OSLogLoggingMiddleware) and the actions
+# CI pins. A generator bump regenerates the client on the next build — CI
+# runs swift test on the PR, so a breaking bump fails there, not on a tablet.
+version: 2
+updates:
+  - package-ecosystem: "swift"
+    directory: "/"
+    schedule: { interval: "monthly" }
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule: { interval: "monthly" }
