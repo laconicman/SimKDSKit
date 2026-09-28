@@ -1,0 +1,242 @@
+public import Foundation
+
+// Ported from SimKDS `domain/KdsTicket.kt`. Wire vocabulary follows the Generic
+// KDS spec (`displayNumber`, `visibleAt`), not the Kotlin field names — the spec
+// owns the names here, same rule that dropped `orderId`/`statusUpdatedAt`.
+
+public enum KdsTicketSource: String, Sendable, Hashable, CaseIterable {
+    case pos
+    case online
+    case unknown
+
+    public var operatorLabel: String {
+        switch self {
+        case .pos: "За баром"
+        case .online: "Приложение"
+        case .unknown: "Источник не указан"
+        }
+    }
+}
+
+public enum KdsTicketStatus: String, Sendable, Hashable, CaseIterable {
+    case new
+    case inProgress
+    case ready
+    case completed
+    case cancelled
+    case blocked
+}
+
+/// Optional display metadata in Generic KDS — the backend decides visibility,
+/// so these never gate the board (the SimCafe paid+fiscal gate is gone with the
+/// contract picker; see DocC `Design` deltas).
+public enum KdsPaymentState: String, Sendable, Hashable {
+    case pending, paid, failed, refunded
+}
+
+public enum KdsFiscalState: String, Sendable, Hashable {
+    case pending, accepted, succeeded, needsOperator
+}
+
+/// The spec's full six-value enum — line-level states stay distinct for the
+/// board (a stoplisted line reads differently from a cancelled one). Only
+/// `.available` is non-gating; ticket-level, anything else is the backend's
+/// whole-ticket verdict.
+public enum KdsAvailabilityState: String, Sendable, Hashable {
+    case available, unavailable, blocked, stoplisted, soldOut = "sold_out", cancelled
+}
+
+public struct KdsStation: Sendable, Hashable {
+    public var stationId: String
+    public var label: String
+
+    public init(stationId: String, label: String) {
+        self.stationId = stationId
+        self.label = label
+    }
+
+    public static let barHot = KdsStation(stationId: "station_bar_hot", label: "BAR-HOT")
+    public static let barCold = KdsStation(stationId: "station_bar_cold", label: "BAR-COLD")
+    public static let kitchen = KdsStation(stationId: "station_kitchen", label: "KITCHEN")
+    public static let unknown = KdsStation(stationId: "station_unknown", label: "UNKNOWN")
+
+    /// Legacy/display-name path: accepts loose tokens ("bar", "BAR HOT",
+    /// `stationBarCold`) and normalizes them to a `station_*` id.
+    public static func fromBackend(_ value: String?) -> KdsStation {
+        let raw = value?.trimmingCharacters(in: .whitespaces) ?? ""
+        switch raw.normalizedStationToken {
+        case "":
+            return .unknown
+        case "bar", "hot", "barhot", "stationbar", "stationbarhot":
+            return .barHot
+        case "cold", "barcold", "stationbarcold":
+            return .barCold
+        case "kitchen", "stationkitchen":
+            return .kitchen
+        default:
+            let stationId = raw.stationIdNormalized
+            return KdsStation(stationId: stationId, label: stationId.stationLabel)
+        }
+    }
+
+    /// Strict path for the Generic contract: the wire id is an opaque nonempty
+    /// string — only blank collapses to `.unknown`. Known stations still map
+    /// to their canonical constants; custom ids keep their wire form and get
+    /// a humanized label.
+    public static func fromBackendStationId(_ value: String?) -> KdsStation {
+        let raw = value?.trimmingCharacters(in: .whitespaces) ?? ""
+        switch raw.lowercased() {
+        case "": return .unknown
+        case Self.barHot.stationId: return .barHot
+        case Self.barCold.stationId: return .barCold
+        case Self.kitchen.stationId: return .kitchen
+        case Self.unknown.stationId: return .unknown
+        default:
+            return KdsStation(stationId: raw, label: raw.stationLabel)
+        }
+    }
+
+    /// The spec's contract: `stationId` is a nonempty string. Compare trimmed
+    /// and case-folded — no `station_` syntax is imposed on backend ids.
+    public func matchesStationId(_ value: String) -> Bool {
+        let candidate = value.trimmingCharacters(in: .whitespaces)
+        return !stationId.isEmpty && !candidate.isEmpty
+            && stationId.lowercased() == candidate.lowercased()
+    }
+}
+
+public struct KdsTicketItem: Sendable, Hashable {
+    public var name: String
+    /// The spec's `quantity` is a positive *number* — weighted items exist
+    /// (0.5 kg), so this stays fractional. Views format it.
+    public var quantity: Double
+    public var modifiers: [String]
+    public var comment: String?
+    public var recipeLines: [String]
+    public var availabilityState: KdsAvailabilityState
+
+    public init(
+        name: String,
+        quantity: Double,
+        modifiers: [String] = [],
+        comment: String? = nil,
+        recipeLines: [String] = [],
+        availabilityState: KdsAvailabilityState = .available
+    ) {
+        self.name = name
+        self.quantity = quantity
+        self.modifiers = modifiers
+        self.comment = comment
+        self.recipeLines = recipeLines
+        self.availabilityState = availabilityState
+    }
+}
+
+public struct KdsTicket: Sendable, Hashable, Identifiable {
+    public var id: String
+    public var displayNumber: String
+    public var source: KdsTicketSource
+    public var sourceLabel: String?
+    public var status: KdsTicketStatus
+    public var paymentState: KdsPaymentState?
+    public var fiscalState: KdsFiscalState?
+    public var visibleAt: Date
+    /// When this client first saw the ticket in `.ready` — the pickup-wait
+    /// baseline. Stamped by the reducer (action `occurredAt` on an optimistic
+    /// mark-ready, poll time when a remote ticket turns ready); `nil` while
+    /// the ticket has never been ready.
+    public var readyAt: Date?
+    public var slaDueAt: Date?
+    public var version: Int?
+    public var station: KdsStation
+    public var customerName: String?
+    public var availabilityState: KdsAvailabilityState
+    public var items: [KdsTicketItem]
+
+    public init(
+        id: String,
+        displayNumber: String,
+        source: KdsTicketSource,
+        sourceLabel: String? = nil,
+        status: KdsTicketStatus,
+        paymentState: KdsPaymentState? = nil,
+        fiscalState: KdsFiscalState? = nil,
+        visibleAt: Date,
+        readyAt: Date? = nil,
+        slaDueAt: Date? = nil,
+        version: Int? = nil,
+        station: KdsStation = .barHot,
+        customerName: String? = nil,
+        availabilityState: KdsAvailabilityState = .available,
+        items: [KdsTicketItem]
+    ) {
+        self.id = id
+        self.displayNumber = displayNumber
+        self.source = source
+        self.sourceLabel = sourceLabel
+        self.status = status
+        self.paymentState = paymentState
+        self.fiscalState = fiscalState
+        self.visibleAt = visibleAt
+        self.readyAt = readyAt
+        self.slaDueAt = slaDueAt
+        self.version = version
+        self.station = station
+        self.customerName = customerName
+        self.availabilityState = availabilityState
+        self.items = items
+    }
+
+    /// Cook-side wait — since the ticket appeared.
+    public func waitDuration(now: Date) -> Duration {
+        .seconds(max(0, Int(now.timeIntervalSince(visibleAt))))
+    }
+
+    /// Pickup-side wait — since the ticket went ready on this client.
+    /// `readyAt` is stamped by the reducer; the `visibleAt` fallback only
+    /// covers hand-built fixtures.
+    public func readyWaitDuration(now: Date) -> Duration {
+        .seconds(max(0, Int(now.timeIntervalSince(readyAt ?? visibleAt))))
+    }
+
+    /// Visibility on the kitchen board. Generic KDS: status + a ticket-level
+    /// availability verdict — the backend already decided which tickets are
+    /// active (payment/fiscal gate is gone, delta 5), so a per-line
+    /// `availabilityState` is display metadata and never hides a ticket the
+    /// backend returned.
+    public var isAllowedForKds: Bool {
+        ![.completed, .cancelled, .blocked].contains(status)
+            && availabilityState == .available
+    }
+}
+
+private extension String {
+    var stationLabel: String {
+        strippingStationPrefix
+            .split(separator: "_")
+            .filter { !$0.isEmpty }
+            .map { $0.uppercased() }
+            .joined(separator: "-")
+    }
+
+    var strippingStationPrefix: String {
+        hasPrefix("station_") ? String(dropFirst("station_".count)) : self
+    }
+
+    var stationIdNormalized: String {
+        let normalized = trimmingCharacters(in: .whitespaces)
+            .replacing("-", with: "_")
+            .replacing(" ", with: "_")
+            .lowercased()
+        if normalized.isEmpty { return "station_unknown" }
+        return normalized.hasPrefix("station_") ? normalized : "station_\(normalized)"
+    }
+
+    var normalizedStationToken: String {
+        trimmingCharacters(in: .whitespaces)
+            .lowercased()
+            .replacing("_", with: "")
+            .replacing("-", with: "")
+            .replacing(" ", with: "")
+    }
+}

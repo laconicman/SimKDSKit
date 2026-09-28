@@ -64,12 +64,59 @@ absence for oversight:
 - `requiresPaymentFiscalGate` — the paid+fiscal gate was SimCafeAlpha semantics;
   GenericKds backends decide visibility server-side.
 - `orderId`, `statusUpdatedAt` — not in the Generic spec (were legacy
-  tolerance); ready-wait uses `visibleAt` plus the snapshot map.
+  tolerance); ready-wait uses `readyAt` (stamped by the reducer) plus the
+  snapshot map.
 - Basic Auth — its only consumer was the SimCafe staging contour.
 - `10.0.2.2` from the loopback list — the Android emulator's host alias.
 
 One deliberate mapping fix: `delivery` source → `.online` (the Kotlin table left
 it `Unknown`; a delivery order is an online-channel ticket for board purposes).
+
+And two deliberate renames, same authority: the model carries spec field names
+(`displayNumber`, `visibleAt`), not the Kotlin ones (`number`, `createdAt`).
+`KdsAction` addresses tickets by `ticketId` only — the Generic wire always has
+one, so the Kotlin number-or-id fallback addressing went with it;
+`displayNumber` still rides on the action for operator-facing error text.
+
+## Review-round repairs (PR #2)
+
+Devin Review's pass on the domain port caught real defects; they were fixed
+rather than ported, and the differences from the Android file are deliberate:
+
+- **Optimistic version survives a stale poll.** `mergeRemoteTicket` keeps
+  `max(local, remote)` when local status wins — otherwise the next action's
+  `expectedVersion` went out stale and 409-looped.
+- **Line availability is display metadata.** The backend owns the active set;
+  a ticket with an unavailable line stays on the board with the line marked.
+  Ticket-level `availabilityState` still gates (it is a whole-ticket verdict).
+- **`readyAt` carries the ready transition.** Optimistic mark-ready stamps it
+  from `occurredAt`; a remote ticket first seen ready is stamped at poll time.
+  Ready-wait measures pickup time, not prep+pickup.
+- **`quantity` is `Double`.** The spec says positive number; weighted items
+  (0.5 kg) are legal wire values.
+- **Station/device params don't flip mock→real.** Only backend-target params
+  (`api`, `apiBaseUrl`, `backendBaseUrl`, `locationId`, `location`, `cafeId`)
+  or an explicit `mode=` do — a station-only QR can't strand a demo tablet.
+- **Auth-key detection strips separators.** `api_key`, `api-key`, `apikey`
+  match alike; `bearer_token`, `Authorization`, `client-secret` reject too.
+- **Preflight requires `locationId` and an https host.** `https://` with no
+  host parses but reaches nothing.
+- **Conflicting station params resolve by `stationId`.** The explicit id owns
+  routing, so the label derives from it — `station=pastry&stationId=
+  station_drinks` shows DRINKS over the drinks post, not PASTRY.
+
+## Build settings are load-bearing
+
+Two non-obvious manifest decisions, both forced by the generated code:
+
+- No `.defaultIsolation(MainActor.self)` — under it the generated `Sendable`
+  closures and synthesized `Decodable` conformances become actor-isolated and
+  the target does not compile. The app keeps its MainActor dialect; the package
+  stays in default isolation and its public types are `Sendable` value types.
+- `.enableUpcomingFeature("InternalImportsByDefault")` — the generator emits
+  `package import`, which collides with implicit `internal` imports in
+  hand-written files (SE-0409 ambiguity). With the feature on, files exposing
+  `Date`/`Duration` in public API write `public import Foundation`.
 
 ## Sources
 
