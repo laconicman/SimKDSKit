@@ -139,8 +139,10 @@ and it neither needs nor is helped by a second backend.
 - Build the settings sheet as **sections per backend** driven by the
   descriptor, even while there is one section.
 - Branch on `backendMode` for exactly one thing: the demo toggle.
-- Offer actions from the board layout, never from a hard-coded list — Phase 1
-  makes the layout capability-aware, and the views should not have to change.
+- Offer a ticket's action from `KdsTicket.boardActionPresentation(now:)` —
+  the one public source, and the place Phase 1 gates on capabilities — never
+  from a hard-coded list in a view. ``KdsBoardLayout`` only buckets tickets
+  into columns; it is not an action source.
 
 ## Where generics *would* fit, and why they still do not
 
