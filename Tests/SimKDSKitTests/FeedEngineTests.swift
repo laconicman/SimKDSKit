@@ -589,8 +589,10 @@ struct FeedEngineTests {
         await refreshing
 
         // The suspended fetch was for the hot bar — it must not repopulate
-        // the board now bound to the cold bar.
-        #expect(await engine.state.tickets.isEmpty)
+        // the board now bound to the cold bar. Its replacement, run for the
+        // cold bar, is what lands.
+        #expect(await api.refreshCount == 2)
+        #expect(await engine.state.tickets.map(\.displayNumber) == ["M-11"])
         #expect(await engine.state.connectionState == .connected)
     }
 
@@ -711,6 +713,71 @@ struct FeedEngineTests {
         #expect(await engine.state.connectionState == .connected)
         #expect(await engine.state.lastActionError == nil)
         #expect(await engine.state.tickets.isEmpty == false) // board kept: same backend, same station
+    }
+
+    @Test("A settings edit during start() reruns the initial fetch instead of leaving the board connecting")
+    func settingsEditDuringStartReruns() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+
+        await api.setFetchHook { await gate.wait() }
+        async let starting: Void = engine.start()
+        while await api.fetchCount == 0 { try await Task.sleep(for: .milliseconds(1)) }
+
+        var settings = await engine.state.deviceSettings
+        settings.deviceId = "tablet_new"
+        await engine.updateSettings(settings)
+        await api.setFetchHook {} // the replacement must not block
+        await gate.open()
+        await starting
+
+        #expect(await api.fetchCount == 2) // the stale request was replaced, not just dropped
+        #expect(await engine.state.connectionState == .connected)
+        #expect(await engine.state.tickets.isEmpty == false)
+    }
+
+    @Test("A settings edit during retryReconnect() ends connected, not stuck reconnecting")
+    func settingsEditDuringReconnectReruns() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setRefreshHook { await gate.wait() }
+        async let reconnecting: Void = engine.retryReconnect()
+        while await api.refreshCount == 0 { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(await engine.state.connectionState == .reconnecting)
+
+        var settings = await engine.state.deviceSettings
+        settings.actorId = "barista_02"
+        await engine.updateSettings(settings)
+        await api.setRefreshHook {}
+        await gate.open()
+        await reconnecting
+
+        #expect(await api.refreshCount == 2)
+        #expect(await engine.state.connectionState == .connected)
+    }
+
+    @Test("Saving unchanged settings does not invalidate a fetch in flight")
+    func unchangedSettingsKeepFetch() async throws {
+        let gate = Gate()
+        let api = ScriptedKdsAPI(tickets: seeds())
+        let engine = makeEngine(api)
+        await engine.start()
+
+        await api.setRefreshHook { await gate.wait() }
+        async let refreshing: Void = engine.refresh()
+        while await api.refreshCount == 0 { try await Task.sleep(for: .milliseconds(1)) }
+
+        let same = await engine.state.deviceSettings
+        await engine.updateSettings(same)
+        await gate.open()
+        await refreshing
+
+        #expect(await api.refreshCount == 1) // nothing to replace — the request still describes this device
+        #expect(await engine.state.connectionState == .connected)
     }
 
     @Test("A settings edit that keeps the board (device label) does not strand a failed action")

@@ -27,10 +27,11 @@ public actor KdsFeedEngine {
     /// Kotlin's `synchronized(dispatchLock)`: action lifecycles serialize so a
     /// slow backend call can't interleave with a second tap's optimistic edit.
     private var dispatchTail: Task<Void, Never>?
-    /// Bumped on every settings change. A fetch is a request built from one
-    /// settings snapshot — device, actor, location, station headers — so once
-    /// that snapshot is superseded its outcome describes a request this device
-    /// no longer makes: neither its tickets nor its failure are published.
+    /// Bumped when the settings snapshot (or the facade) actually changes. A
+    /// fetch is a request built from one snapshot — device, actor, location,
+    /// station headers — so once that snapshot is superseded its outcome
+    /// describes a request this device no longer makes: neither its tickets
+    /// nor its failure are published; see `mayPublish` for the rerun.
     private var settingsVersion = 0
     /// Bumped when the board's identity changes — a different backend or
     /// station. Action outcomes key to this, not to `settingsVersion`: an edit
@@ -90,10 +91,7 @@ public actor KdsFeedEngine {
             let tickets = try await api.fetchActiveTickets(context: context)
                 .deduplicatedById() // same id policy as the poll path
                 .forDeviceStation(settings)
-            // A settings change or a newer fetch landed while this was in
-            // flight — this request no longer describes the device; neither
-            // its tickets nor its failure belong to the current settings.
-            guard snapshot == settingsVersion, mine == fetchTicket else { return }
+            guard await mayPublish(snapshot: snapshot, mine: mine, rerun: { await start() }) else { return }
             // Sampled after the round trip: pickup wait starts when the
             // tablet first sees the ticket ready, not when it asked.
             let now = clock()
@@ -111,7 +109,7 @@ public actor KdsFeedEngine {
             state.lastActionError = nil // a successful start clears the stale banner
             persistAndPublish()
         } catch {
-            guard snapshot == settingsVersion, mine == fetchTicket else { return }
+            guard await mayPublish(snapshot: snapshot, mine: mine, rerun: { await start() }) else { return }
             let feedError = KdsActionError(
                 ticketNumber: "feed",
                 message: errorMessage(error),
@@ -283,7 +281,9 @@ public actor KdsFeedEngine {
             }
             state.tickets = state.tickets.filter { $0.station.matchesStationId(settings.stationId) }
         }
-        settingsVersion += 1
+        // An unchanged snapshot invalidates nothing — a same-settings save
+        // must not discard (and rerun) a fetch that is already in flight.
+        if settings != previous || newAPI != nil { settingsVersion += 1 }
         if backendChanged || stationChanged { boardVersion += 1 }
         persistAndPublish()
     }
@@ -317,9 +317,9 @@ public actor KdsFeedEngine {
                 .forDeviceStation(settings)
             let directory = (try? await api.fetchStations(context: context))
                 ?? state.stationDirectory
-            // A settings change or a newer fetch landed while this was in
-            // flight — publishing now would merge the old backend's board.
-            guard snapshot == settingsVersion, mine == fetchTicket else { return }
+            guard await mayPublish(snapshot: snapshot, mine: mine, rerun: {
+                await refreshSnapshot(lastActionError: lastActionError)
+            }) else { return }
             let now = clock() // after the round trip — see `start()`
             for remote in refreshed { lastRemote[remote.id] = remote }
             state.tickets = Self.replacedSnapshot(
@@ -337,7 +337,9 @@ public actor KdsFeedEngine {
             state.lastActionError = lastActionError
             persistAndPublish()
         } catch {
-            guard snapshot == settingsVersion, mine == fetchTicket else { return }
+            guard await mayPublish(snapshot: snapshot, mine: mine, rerun: {
+                await refreshSnapshot(lastActionError: lastActionError)
+            }) else { return }
             let now = clock()
             let message = errorMessage(error)
             state.connectionState = .offline
@@ -356,6 +358,21 @@ public actor KdsFeedEngine {
             )
             persistAndPublish()
         }
+    }
+
+    /// Whether a completed fetch may publish its outcome — tickets or failure.
+    /// A fetch superseded by a newer one yields to it. One invalidated by a
+    /// settings change describes a request this device no longer makes; if
+    /// nothing newer is in flight, dropping it would leave the board at
+    /// `.connecting`/`.reconnecting` forever, so `rerun` first runs the same
+    /// fetch again for the current settings.
+    private func mayPublish(snapshot: Int, mine: Int, rerun: () async -> Void) async -> Bool {
+        guard mine == fetchTicket else { return false }
+        guard snapshot == settingsVersion else {
+            await rerun()
+            return false
+        }
+        return true
     }
 
     /// Kotlin `replaceWithActiveSnapshot`: merge each remote ticket with its
