@@ -37,18 +37,20 @@ The feed refreshes on a 2 s timer while the scene is active, mirroring Android.
 **Discharge:** SSE/WebSocket per the upstream `open-integration-roadmap.md`;
 the engine's snapshot merge already accepts out-of-band arrivals.
 
-## SK-4 — Station directory refetched on every poll
+## SK-4 — Station directory refetched on every poll — **discharged**
 
-`KdsFeedEngine.refreshSnapshot` calls `fetchStations` alongside every 2 s ticket
-poll — a faithful port of Android `refreshActiveSnapshot`
-(`FakeKdsRepository.kt:300-303`), kept so the first release matches the
-reference behaviour. Tracked as issue #6.
+`KdsFeedEngine.refreshSnapshot` called `fetchStations` alongside every 2 s
+ticket poll — a faithful port of Android `refreshActiveSnapshot`
+(`FakeKdsRepository.kt:300-303`), kept so the first release matched the
+reference behaviour (issue #6).
 
-**Cost:** one directory GET per poll, doubling request volume for data that
-changes when a station is added or deactivated — rarely.
-**Discharge:** fetch on `start()`, on backend-identity change in
-`updateSettings`, and on a slow cadence (every Nth poll or ~60 s); the engine
-already keeps `state.stationDirectory` as the fallback. Proposed upstream too
+**Cost was:** one directory GET per poll, doubling request volume for data
+that changes when a station is added or deactivated — rarely.
+**Discharged by:** `directoryRefreshInterval` on `KdsFeedEngine.init`
+(default 60 s). The directory is fetched on `start()`, on the first poll after
+a backend-identity change, whenever the interval has elapsed, and again on
+the next poll after a failed fetch; `state.stationDirectory` is the fallback
+in between. Still proposed upstream
 (`Upstream/simkds-android-findings.md`, row 20).
 
 ## SK-5 — Contract gaps the client cannot close alone

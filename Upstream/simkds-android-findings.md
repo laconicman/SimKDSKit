@@ -49,7 +49,7 @@ Kept, as a recorded divergence rather than a defect:
 
 | # | Behaviour | Kotlin | iOS |
 | --- | --- | --- | --- |
-| 20 | Station directory refetched on every 2 s poll — a directory GET per poll, doubling traffic for data that changes rarely | `data/FakeKdsRepository.kt:300-303` inside `refreshActiveSnapshot` | Ported faithfully; registered as SK-4 with a slower-cadence discharge (issue #6) |
+| 20 | Station directory refetched on every 2 s poll — a directory GET per poll, doubling traffic for data that changes rarely | `data/FakeKdsRepository.kt:300-303` inside `refreshActiveSnapshot` | Fetched on `start()`, after a backend change, and on a 60 s cadence (`directoryRefreshInterval`); a failed fetch retries next poll. SK-4 discharged, issue #6 |
 | 21 | A persisted `lastActionError` survives a *successful* initial fetch — the stale banner shows over a healthy board until the next action | `data/FakeKdsRepository.kt:66` | Cleared on successful `start()` (`dcda801`). A suggestion for upstream, not a bug report |
 
 ## Pasteable tracking issue (Russian, for the Forgejo tracker)
