@@ -225,12 +225,14 @@ gh release create 0.2.0 --generate-notes \
   --notes "$(git tag -l --format='%(contents:body)' 0.2.0)"
 ```
 
-The tag body leads, the grouped PR list follows. Retrofit for `0.1.0` once
-`release.yml` is on `main` (generated notes read it from the default branch):
-`gh release edit 0.1.0 --notes "$(git tag -l --format='%(contents:body)' 0.1.0)
-
-$(gh api repos/laconicman/SimKDSKit/releases/generate-notes -X POST -f tag_name=0.1.0 --jq .body)"`
-— the merged PRs #1–#5, #10 were labelled retroactively so the sections fill.
+The tag body leads, the grouped PR list follows. **`release.yml` is read at
+the tagged commit, not from the default branch** — verified: with the file on
+`main`, `POST …/releases/generate-notes` for `0.1.0` (whose commit predates it)
+returns a flat "What's Changed" list, and passing `configuration_file_path`
+answers `400 Could not find a configuration file`. So sections appear from the
+first tag that *contains* the file (`0.2.0`); `0.1.0` was retrofitted with the
+flat generated list appended to its tag body, and stays that way. Corollary
+that travels: commit `release.yml` *before* the tag whose notes should use it.
 
 A workflow can run the same recipe on tag push; the interesting part is what
 to *assert*, since SwiftPM has no version file:
@@ -314,8 +316,9 @@ ruleset · release `0.1.0` from the tag.
 the ruleset; then §6 becomes usable: `gh pr merge N --merge --auto` after the
 ledger reads 0.
 
-**When #16 merges:** retrofit `0.1.0`'s notes with the §10 `gh release edit`
-recipe (release.yml must be on `main` first).
+**Done when #16 merged:** `0.1.0`'s notes retrofitted with the generated PR
+list (flat — see §10 on why the sections cannot apply to a tag that predates
+`release.yml`).
 
 **On the next tag (0.2.0):** run the §10 `--generate-notes --notes "$(tag
 body)"` recipe by hand once, close the milestone in the same step, then commit
@@ -334,5 +337,6 @@ merge methods) · §12 (badge).
 | Label set with `release.yml` | pattern ✓; `hygiene`/`tests`/`breaking` ✓ | `upstream`, `tech-debt` ✓ | |
 | CI shape (`swift build && swift test` on `macos-26`) | | ✓ (`YandexDeliveryExpress`, `YooMoneyAPIClient` have neither CI nor `.github/` — same gap, same fix) | runner choice follows each manifest's tools version |
 | Tag-only versioning: no version-file assert; assert "tag on main" + "builds at tag" | | ✓ | |
+| `release.yml` is read at the tagged commit — commit it before the tag that should use it | ✓ | ✓ | |
 | Retarget re-review cost; ledger as the gate; Devin check ≠ findings-free | | ✓ (any repo reviewed by Devin) | |
 | DeepWiki badge | public repos ✓ | | |
