@@ -287,12 +287,27 @@ public actor KdsFeedEngine {
             || previous.apiBaseUrl != settings.apiBaseUrl
             || previous.locationId != settings.locationId
         let stationChanged = previous.stationId != settings.stationId
+        // A retry is the *same* request only if its body is: station, device
+        // and actor travel in the action payload (device also in the
+        // idempotency key). Once any of them moves, a pending stamp would
+        // pair the old key with a new body — `idempotency_conflict` on a
+        // backend that recorded the first attempt. The next tap is a new
+        // request and gets a fresh stamp.
+        let requestIdentityChanged = stationChanged
+            || previous.deviceId != settings.deviceId
+            || previous.actorId != settings.actorId
         if let newAPI { api = newAPI }
         state.deviceSettings = settings
+        if backendChanged || requestIdentityChanged {
+            pendingActionOccurredAt.removeAll()
+        }
         if backendChanged {
             state.tickets = []
-            pendingActionOccurredAt.removeAll()
             lastRemote.removeAll()
+            // The directory belongs to the backend and location, not the
+            // device; the previous one's stations must not be offered here
+            // if the new backend's fetch fails.
+            state.stationDirectory = defaultKdsStationDirectory()
             state.boardFilters.stationId = settings.stationId
         } else {
             if stationChanged {

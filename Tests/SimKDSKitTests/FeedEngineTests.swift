@@ -389,6 +389,56 @@ struct FeedEngineTests {
         #expect(sent[1].occurredAt == base) // retry reuses the first stamp
     }
 
+    @Test("An actor change between attempts makes the retry a new request — fresh occurredAt, fresh key")
+    func actorChangeInvalidatesRetryStamp() async throws {
+        var settings = KdsDeviceSettings()
+        settings.backendMode = .real
+        let store = InMemoryKdsSettingsStore(KdsPersistedSettings(deviceSettings: settings))
+        let api = ScriptedKdsAPI(
+            tickets: seeds(),
+            actionResults: [.failure(.backendError(message: "timeout")), .success(())]
+        )
+        let clock = MutableClock(base)
+        let engine = makeEngine(api, store: store, clock: clock)
+        await engine.start()
+
+        let ticket = seed("A-43")
+        await engine.dispatch(action(ticket: ticket, at: base))
+        var changed = await engine.state.deviceSettings
+        changed.actorId = "barista_02" // the payload names a different actor now
+        await engine.updateSettings(changed)
+        clock.advance(by: 15)
+        await engine.dispatch(action(ticket: ticket, at: clock.now))
+
+        let sent = await api.sentActions
+        #expect(sent.count == 2)
+        #expect(sent[1].occurredAt == clock.now) // not A's stamp under B's body
+    }
+
+    @Test("A backend change drops the previous backend's station directory")
+    func backendChangeResetsDirectory() async throws {
+        let foreign = [KdsStationDirectoryEntry(
+            stationId: "station_l1_grill", route: "grill", label: "GRILL",
+            displayName: "L1 grill", sortOrder: 1,
+            activeTicketsPath: "/api/v1/kds/stations/station_l1_grill/tickets/active", isActive: true
+        )]
+        let api = ScriptedKdsAPI(tickets: seeds(), stationsResult: .success(foreign))
+        let engine = makeEngine(api)
+        await engine.start()
+        #expect(await engine.state.stationDirectory.map(\.stationId) == ["station_l1_grill"])
+
+        // The new backend's directory fetch fails; its tickets succeed.
+        let newAPI = ScriptedKdsAPI(tickets: seeds(), stationsResult: .failure(.backendError(message: "503")))
+        var settings = await engine.state.deviceSettings
+        settings.locationId = "loc-l2"
+        await engine.updateSettings(settings, api: newAPI)
+        await engine.refresh()
+
+        // L1's grill must not be offered on L2's board.
+        #expect(await engine.state.stationDirectory.map(\.stationId).contains("station_l1_grill") == false)
+        #expect(await engine.state.connectionState == .connected)
+    }
+
     @Test("Consecutive accepted actions carry advanced expected versions")
     func advancingVersions() async throws {
         var seeded = seeds()
